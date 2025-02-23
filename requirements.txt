@@ -1,0 +1,13 @@
+Flask==3.0.3
+Flask_SocketIO==5.3.7
+pandas==2.2.2
+yfinance==0.2.37
+python-dotenv==1.0.1
+rich==13.9.4
+SQLAlchemy==2.0.35
+gunicorn==21.1.0
+gevent==21.1.1
+gevent-websocket==0.10.1
+uuid==1.30
+ib_insync==0.9.86
+nest_asyncio==1.6.0
