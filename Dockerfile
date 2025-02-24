@@ -31,8 +31,8 @@ COPY . .
 RUN chmod +x run.sh
 
 # Set environment variables
-ARG SOCKET_PORT
-ENV SOCKET_PORT=${SOCKET_PORT}
-EXPOSE ${SOCKET_PORT}
+ARG PORT
+ENV PORT=${PORT}
+EXPOSE ${PORT}
 
 ENTRYPOINT ["./run.sh"]
