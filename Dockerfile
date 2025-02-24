@@ -18,9 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directory for persistent database storage
 RUN mkdir -p /app/src/db
+RUN mkdir -p /app/cache
 
-# Create volume mount point
+# Create volume mount points
 VOLUME /app/src/db
+VOLUME /app/cache
 
 # Copy the application code
 COPY . .
@@ -28,8 +30,9 @@ COPY . .
 # Make run script executable
 RUN chmod +x run.sh
 
-# Set the default environment variable
-ENV OASIS_SOCKET_PORT=${OASIS_SOCKET_PORT}
-EXPOSE ${OASIS_SOCKET_PORT}
+# Set environment variables
+ARG SOCKET_PORT
+ENV SOCKET_PORT=${SOCKET_PORT}
+EXPOSE ${SOCKET_PORT}
 
 ENTRYPOINT ["./run.sh"]
