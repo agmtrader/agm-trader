@@ -2,10 +2,10 @@
 FROM python:3.9-slim
 
 # Add labels for metadata
-LABEL maintainer="aguilarcarboni"
-LABEL name="singularity-socket"
+LABEL maintainer="AGM Technology"
+LABEL name="auto-trader"
 LABEL version="1.0"
-LABEL description="Singularity WebSocket server"
+LABEL description=""
 
 # Set the working directory in the container
 WORKDIR /app
