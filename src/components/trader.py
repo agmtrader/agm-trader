@@ -11,7 +11,7 @@ from src.components.strategy import BullSpread
 import math
 from src.lib.params import BullSpreadParams
 
-class Singularity:
+class Trader:
 
     def __init__(self):
         self.ib = IB()
@@ -90,6 +90,7 @@ class Singularity:
     
     def run_strategy(self, strategy_name: str, ticker: str):
 
+        # Assign strategy
         if strategy_name == 'BULL_SPREAD':
             strategy = BullSpread(BullSpreadParams(
                 ticker=ticker,
@@ -103,6 +104,7 @@ class Singularity:
         else:
             raise Exception(f"Strategy {strategy_name} not found")
         
+        # Get historical data
         strategy.params.historicalData = self.get_historical_data(ticker)
 
         logger.announcement(f"Running strategy: {strategy}", 'info')
@@ -110,6 +112,7 @@ class Singularity:
         
         try:
             while True:
+
                 if not self.running:
                     exit()
 
@@ -125,17 +128,21 @@ class Singularity:
                 # Run strategy
                 self.decision = strategy.run()
                 logger.announcement(f"Ran strategy at {datetime.now()}", 'info')
-                logger.announcement(f"Decision: {self.decision}", 'decision')
+                logger.announcement(f"Decision: {self.decision}", 'success')
                 if self.decision != 'BUY' and self.decision != 'SELL':
                     continue
 
+                # Create orders for the strategy
                 order = strategy.create_order(self.decision)
 
+                # Place order
                 self.place_order(order)
 
+                # Update strategy params once more
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.position = self.get_position()
                 
+                # Wait for 1 second before running the strategy again
                 time.sleep(1)
                 
         except Exception as e:
@@ -256,7 +263,7 @@ class Singularity:
                         'filled': order.filled(),
                         'remaining': order.remaining(),
                     })
-                logger.info(f"Completed order: {orders[-1]}")
+                logger.info(f"Successfully got {len(orders)} completed orders")
                 return orders
             
             completed_orders = self._execute(_get_completed_orders())
@@ -276,7 +283,7 @@ class Singularity:
                     order_dict = order.dict()
                     order_dict['softDollarTier'] = order.softDollarTier.dict()
                     orders.append(order_dict)
-                logger.info(f"Open order: {orders[-1]}")
+                logger.info(f"Successfully got {len(orders)} open orders")
                 return orders
             
             open_orders = self._execute(_get_open_orders())
@@ -307,12 +314,13 @@ class Singularity:
             logger.error(f"Error placing order: {str(e)}")
             raise Exception(f"Error placing order: {str(e)}")
 
-class SingularitySnapshot:
-    def __init__(self, singularity: Singularity):
+class TraderSnapshot:
+
+    def __init__(self, trader: Trader):
         logger.announcement("Creating snapshot", 'info')
-        self.strategy = singularity.strategy
-        self.decision = singularity.decision
-        self.account_summary = singularity.account_summary
+        self.strategy = trader.strategy
+        self.decision = trader.decision
+        self.account_summary = trader.account_summary
 
     def to_dict(self):
         return {

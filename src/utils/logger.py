@@ -13,7 +13,7 @@ class Logger:
         })
         self.console = Console(theme=custom_theme)
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,
             format="%(message)s",
             datefmt="[%X]",
             handlers=[RichHandler(console=self.console, rich_tracebacks=True)]
@@ -32,19 +32,8 @@ class Logger:
         logging.getLogger('nltk').setLevel(logging.ERROR)
         logging.getLogger('chardet').setLevel(logging.ERROR)
         logging.getLogger('sqlalchemy').setLevel(logging.ERROR)
-        logging.getLogger('socketio').setLevel(logging.ERROR)
-        logging.getLogger('gevent').setLevel(logging.ERROR)
-        logging.getLogger('geventwebsocket').setLevel(logging.ERROR)
-        logging.getLogger('gevent.greenlet').setLevel(logging.ERROR)
-        logging.getLogger('gevent.pool').setLevel(logging.ERROR)
-        logging.getLogger('gevent.event').setLevel(logging.ERROR)
-        logging.getLogger('gevent.backdoor').setLevel(logging.ERROR)
-        logging.getLogger('gevent.lock').setLevel(logging.ERROR)
-        logging.getLogger('gevent.subprocess').setLevel(logging.ERROR)
-        logging.getLogger('gevent.threadpool').setLevel(logging.ERROR)
-        logging.getLogger('selector_events').setLevel(logging.ERROR)
         logging.getLogger('ib_insync').setLevel(logging.ERROR)
-        logging.getLogger('ibapi').setLevel(logging.ERROR)
+        logging.getLogger('selector_events').setLevel(logging.ERROR)
 
     def info(self, message):
         self.logger.debug(f"[blue]{message}[/blue]", extra={'markup': True})
@@ -60,8 +49,6 @@ class Logger:
             self.logger.info(f"\n[blue][bold]{message}[/bold][/blue]", extra={'markup': True})
         elif type == 'success':
             self.logger.info(f"[bold][green]{message}[/green][/bold]\n", extra={'markup': True})
-        elif type == 'decision':
-            self.logger.info(f"[bold][yellow]{message}[/yellow][/bold]\n", extra={'markup': True})
         else:
             raise ValueError("Invalid type. Choose 'info' or 'success'.")
 

@@ -18,11 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directory for persistent database storage
 RUN mkdir -p /app/src/db
-RUN mkdir -p /app/cache
 
-# Create volume mount points
+# Create volume mount point
 VOLUME /app/src/db
-VOLUME /app/cache
 
 # Copy the application code
 COPY . .
@@ -30,9 +28,7 @@ COPY . .
 # Make run script executable
 RUN chmod +x run.sh
 
-# Set environment variables
-ARG PORT
-ENV PORT=${PORT}
-EXPOSE ${PORT}
+# Set the default environment variable
+EXPOSE 3333
 
 ENTRYPOINT ["./run.sh"]

@@ -10,4 +10,4 @@ if [ -f .env ]; then
 fi
 
 # Start Gunicorn with environment variables
-gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 -b 0.0.0.0:$PORT wsgi:application
+gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 -b 0.0.0.0:${PORT} wsgi:application

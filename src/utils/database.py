@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Table, MetaData
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy.orm import Session
 from datetime import datetime
 from functools import wraps
@@ -23,11 +23,13 @@ class DatabaseHandler:
         self.type = type
         self.base = base
 
-        self.base.metadata.create_all(self.engine)
+        try:
+            self.base.metadata.create_all(self.engine)
+        except Exception as e:
+            logger.error(f'Error creating tables: {str(e)}')
 
         self.metadata = MetaData()
         self.metadata.reflect(bind=self.engine)
-        logger.announcement(f'Database initialized', 'success')
 
     def with_session(self, func):
         @wraps(func)
@@ -157,24 +159,44 @@ class DatabaseHandler:
                 session.flush()
 
                 logger.success(f"Successfully deleted entry with id: {item.id} from table: {table}.")
-                return Response.success(item.as_dict())
+                return Response.success(item)
             
             except SQLAlchemyError as e:
                 logger.error(f"Error deleting {table}: {str(e)}")
                 return Response.error(f'Database error: {str(e)}')
 
         return _delete(table, params)
+    
+    def delete_all(self, table: str):
+        @self.with_session
+        def _delete_all(session, table: str):
+            logger.info(f'Attempting to delete all entries from table: {table}')
+            try:
+                tbl = Table(table, self.metadata, autoload_with=self.engine)
+                session.execute(tbl.delete())
+                session.flush()
+                logger.success(f'Successfully deleted all entries from table: {table}')
+                return Response.success(f'Successfully deleted all entries from table: {table}')
+            except SQLAlchemyError as e:
+                logger.error(f'Error deleting all entries from table: {str(e)}')
+                return Response.error(f'Database error: {str(e)}')
+
+        return _delete_all(table)
 
     def get_tables(self):
-        """Returns a list of all tables in the database."""
-        logger.info('Attempting to get all tables from database')
-        try:
-            table_names = self.metadata.tables.keys()
-            logger.success(f'Successfully retrieved {len(table_names)} tables')
-            return Response.success(list(table_names))
-        except SQLAlchemyError as e:
-            logger.error(f'Error getting tables: {str(e)}')
-            return Response.error(f'Database error: {str(e)}')
+        @self.with_session
+        def _get_tables(session):
+            """Returns a list of all tables in the database."""
+            logger.info('Attempting to get all tables from database')
+            try:
+                table_names = self.metadata.tables.keys()
+                logger.success(f'Successfully retrieved {len(table_names)} tables')
+                return Response.success(list(table_names))
+            except SQLAlchemyError as e:
+                logger.error(f'Error getting tables: {str(e)}')
+                return Response.error(f'Database error: {str(e)}')
+
+        return _get_tables()
 
     def get_schema(self, table: str):
         """Returns the schema of a specified table."""
@@ -201,3 +223,46 @@ class DatabaseHandler:
         except SQLAlchemyError as e:
             logger.error(f'Error getting schema: {str(e)}')
             return Response.error(f'Database error: {str(e)}')
+
+    def from_data_object(self, data: dict, table: str, overwrite: bool = False):
+        """
+        Imports a data object to a SQLite table.
+        The data object must be a list of dictionaries [{}, {}, {}]. (pd.DataFrame.to_dict('records') format)
+        Recieves data and destination table name, and imports the data to the table.
+        If overwrite is True, the table will be truncated before the data is imported.
+        If the table does not exist, it will be created.
+        """
+        @self.with_session
+        def _from_data_object(session, data: dict, table: str, overwrite: bool):
+            logger.info(f'Attempting to import data to table: {table}')
+            try:
+                if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+                    return Response.error("Data must be a list of dictionaries")
+
+                tbl = Table(table, self.metadata, autoload_with=self.engine)
+
+                if overwrite:
+                    logger.info(f'Truncating table: {table}')
+                    session.execute(tbl.delete())
+
+                if not data:
+                    logger.warning(f'No data to import to table: {table}')
+                    return Response.success("No data to import")
+
+                current_time = datetime.now()
+                for item in data:
+                    item['created'] = current_time
+                    item['updated'] = current_time
+
+                session.execute(tbl.insert(), data)
+                session.flush()
+                
+                count = len(data)
+                logger.success(f'Successfully imported {count} records to table: {table}')
+                return Response.success(f"Successfully imported {count} records")
+
+            except SQLAlchemyError as e:
+                logger.error(f'Error importing data: {str(e)}')
+                return Response.error(f'Database error: {str(e)}')
+
+        return _from_data_object(data, table, overwrite)

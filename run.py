@@ -1,39 +1,34 @@
-from gevent import monkey
-monkey.patch_all()
-
 from flask import Flask
 from flask_socketio import SocketIO
-from src.app.spacetime import deploy_socket, deploy_api
-from src.utils.logger import logger
+from gevent import pywsgi
+from geventwebsocket.handler import WebSocketHandler
 import os
 from dotenv import load_dotenv
+from src.utils.logger import logger
 
 load_dotenv()
 
-def create_singularity():
+def create_app():
+
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'secret!'  # Add a secret key for security
-    socketio = SocketIO(app, 
-                       cors_allowed_origins="*", 
-                       async_mode='gevent',
-                       logger=False,
-                       engineio_logger=False)
+    socket = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+
+    from src.app.main import deploy_main_routes
+    deploy_main_routes(socket)
+
+    @app.route('/')
+    def index():
+        return {'title': 'WebSocket server'}
     
-    deploy_socket(socketio)   
-    deploy_api(app)
+    return app, socket
 
-    return app, socketio
+logger.announcement("Starting WebSocket server...", type='info')
+app, socket = create_app()
 
-logger.announcement("Starting Singularity WebSocket server...", type='info')
-singularity, singularity_socket = create_singularity()
-logger.announcement("Singularity WebSocket server started successfully.", type='success')
-
-# Get port from environment
-port = int(os.getenv('SINGULARITY_SOCKET_PORT', 3333))
-logger.announcement(f"Server listening on port {port}", type='info')
+wsgi_server = pywsgi.WSGIServer(('0.0.0.0', os.getenv('PORT')), app, handler_class=WebSocketHandler)
+application = app
 
 if __name__ == '__main__':
-    singularity_socket.run(singularity, host='0.0.0.0', port=port, debug=False)
+    wsgi_server.serve_forever()
 
-# This is needed for Gunicorn to access the app
-application = singularity
+logger.announcement("WebSocket server started successfully.", type='success')
