@@ -34,6 +34,7 @@ def deploy_main_routes(socketio):
     @socketio.on('ping')
     def ping():
         try:
+            logger.announcement("Ping received", 'info')
             emit('pong', Response.success(TraderSnapshot(trader).to_dict()), broadcast=True)
         except Exception as e:
             logger.error(f"Error pinging Trader: {str(e)}")

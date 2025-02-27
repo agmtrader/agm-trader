@@ -7,9 +7,12 @@ from queue import Queue
 import os
 from datetime import datetime
 import time
-from src.components.strategy import BullSpread
 import math
-from src.lib.params import BullSpreadParams
+
+from src.components.strategy import IchimokuBase
+from src.lib.params import IchimokuBaseParams
+
+SLEEP_TIME = 1
 
 class Trader:
 
@@ -25,9 +28,14 @@ class Trader:
         self.account_summary = None
 
         self.connect()
-        self.trading_thread = threading.Thread(target=self.run_strategy, args=('BULL_SPREAD', 'AAPL'))
-        self.trading_thread.start()
-        nest_asyncio.apply()
+
+        try:
+            self.trading_thread = threading.Thread(target=self.run_strategy, args=('ICHIMOKU_BASE',))
+            self.trading_thread.start()
+            nest_asyncio.apply()
+        except Exception as e:
+            logger.error(f"Error starting trading thread: {str(e)}")
+            raise Exception(f"Error starting trading thread: {str(e)}")
 
     def _run_event_loop(self):
         self._loop = asyncio.new_event_loop()
@@ -88,26 +96,19 @@ class Trader:
                 return False
         return False
     
-    def run_strategy(self, strategy_name: str, ticker: str):
+    def run_strategy(self, strategy_name: str):
 
-        # Assign strategy
-        if strategy_name == 'BULL_SPREAD':
-            strategy = BullSpread(BullSpreadParams(
-                ticker=ticker,
-                latestPrice=0,
-                position=0,
-                historicalData=[],
-                openOrders=[],
-                executedOrders=[]
-            ))
+        if strategy_name == 'ICHIMOKU_BASE':
+            strategy = IchimokuBase(IchimokuBaseParams())
             self.strategy = strategy
         else:
             raise Exception(f"Strategy {strategy_name} not found")
         
         # Get historical data
-        strategy.params.historicalData = self.get_historical_data(ticker)
+        for contract in strategy.params.contracts:
+            strategy.params.historicalData[contract.symbol] = self.get_historical_data(contract)
 
-        logger.announcement(f"Running strategy: {strategy}", 'info')
+        logger.announcement(f"Running strategy: {strategy.name}", 'info')
         self.running = True
         
         try:
@@ -117,33 +118,34 @@ class Trader:
                     exit()
 
                 # Update basic strategy params
+                self.account_summary = self.get_account_summary()
+                
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.executedOrders = self.get_completed_orders()
 
-                strategy.params.position = self.get_position()
-                strategy.params.latestPrice = self.get_latest_price(ticker)
-
-                self.account_summary = self.get_account_summary()
+                strategy.params.position = self.get_position(strategy.params.contracts[0])
+                strategy.params.latestPrice = self.get_latest_price(strategy.params.contracts[0])
 
                 # Run strategy
                 self.decision = strategy.run()
                 logger.announcement(f"Ran strategy at {datetime.now()}", 'info')
                 logger.announcement(f"Decision: {self.decision}", 'success')
                 if self.decision != 'BUY' and self.decision != 'SELL':
+                    time.sleep(SLEEP_TIME)
                     continue
 
                 # Create orders for the strategy
                 order = strategy.create_order(self.decision)
 
                 # Place order
-                self.place_order(order)
+                #self.place_order(order)
 
                 # Update strategy params once more
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.position = self.get_position()
                 
                 # Wait for 1 second before running the strategy again
-                time.sleep(1)
+                time.sleep(SLEEP_TIME)
                 
         except Exception as e:
             logger.error(f"Error running strategy: {str(e)}")
@@ -160,17 +162,11 @@ class Trader:
         self.decision = None
         logger.success("Strategy and trading thread stopped")
 
-    def get_historical_data(self, ticker: str):
+    def get_historical_data(self, contract: Contract):
         logger.info(f"Getting historical data")
         try:
             async def _get_historical_data():
-                contract = Contract()
-                contract.symbol = ticker
-                contract.secType = 'STK'
-                contract.exchange = 'ARCA'
-                contract.currency = 'USD'
-
-                historical_data_response = self.ib.reqHistoricalData(contract, endDateTime='', durationStr='10 D', barSizeSetting='1 min', whatToShow='TRADES', useRTH=1)
+                historical_data_response = self.ib.reqHistoricalData(contract, endDateTime='', durationStr='1 Y', barSizeSetting='1 day', whatToShow='TRADES', useRTH=1)
                 historical_data = []
                 for bar in historical_data_response:
                     historical_data.append(bar.dict())
@@ -184,16 +180,11 @@ class Trader:
             logger.error(f"Error getting historical data: {str(e)}")
             raise Exception(f"Error getting historical data: {str(e)}")
 
-    def get_latest_price(self, ticker: str):
+    def get_latest_price(self, contract: Contract):
         logger.info(f"Getting latest price")
         try:
             async def _get_latest_price():
                 self.ib.reqMarketDataType(3)
-                contract = Contract()
-                contract.symbol = ticker
-                contract.secType = 'STK'
-                contract.exchange = 'ARCA'
-                contract.currency = 'USD'
                 market_data_response = self.ib.reqMktData(contract, '233', False, False, [])
                 while math.isnan(market_data_response.last):
                     self.ib.sleep(0.05)
@@ -230,19 +221,19 @@ class Trader:
             logger.error(f"Error getting account summary: {str(e)}")
             raise Exception(f"Error getting account summary: {str(e)}")
         
-    def get_position(self):
+    def get_position(self, contract: Contract):
         logger.info("Getting position")
         try:
             async def _get_position():
                 positions = self.ib.positions()
                 logger.info(f"You have {len(positions)} positions overall")
                 for position in positions:
-                    if position.contract.symbol == self.strategy.params.ticker:
+                    if position.contract.symbol == contract.symbol:
                         return position.position
                 return 0
             
             position = self._execute(_get_position())
-            logger.info(f"You have {position} shares of {self.strategy.params.ticker}")
+            logger.success(f"Successfully got position: {position} shares of {contract.symbol}")
             return position
         except Exception as e:
             logger.error(f"Error getting position: {str(e)}")
@@ -317,7 +308,7 @@ class Trader:
 class TraderSnapshot:
 
     def __init__(self, trader: Trader):
-        logger.announcement("Creating snapshot", 'info')
+        logger.announcement("Creating Trader Snapshot", 'info')
         self.strategy = trader.strategy
         self.decision = trader.decision
         self.account_summary = trader.account_summary

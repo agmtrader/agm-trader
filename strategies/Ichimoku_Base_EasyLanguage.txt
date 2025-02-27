@@ -1,0 +1,479 @@
+inputs:
+	double V_MULTIPLICADOR(  1.5) [
+		DisplayName = "Multiplicador", 
+		ToolTip = "Factor multiplicador del sumando (O-C)"],
+	double V_UMBRAL_POS(  0) [
+		DisplayName = "Umbral positivo", 
+		ToolTip = "Umbral para entrar en posicion larga"],
+	double V_UMBRAL_NEG(  0) [
+		DisplayName = "Umbral negativo", 
+		ToolTip = "Umbral para entrar en posicion corta"],
+	AfStep(  0.02) [DisplayName = "AfStep", ToolTip = 
+	 "Acceleration Factor Step.  Enter the step amount for the parabolic acceleration factor."], 
+	AfLimit(  0.2) [DisplayName = "AfLimit", ToolTip = 
+	 "Acceleration Factor Limit.  Enter the maximum acceleration factor for the parabolic calculation."]	,
+	ATRLength(  14) [
+		DisplayName = "ATRLength", 
+		ToolTip = "Average True Range Length.  Enter the number of bars to use in the moving average of true range."],
+	V_TK_LENGTH(  5) [
+		DisplayName = "V_TK_LENGTH", 
+		ToolTip = "V_TK_LENGTH"],	
+	V_KJ_LENGTH(  21) [
+		DisplayName = "V_KJ_LENGTH", 
+		ToolTip = "V_KJ_LENGTH"],	
+	double Price(  Close) [DisplayName = "Price", ToolTip = 
+	 "Enter an EasyLanguage expression to use in the exponential moving average calculation."],
+	double Length(  9) [DisplayName = "Length", ToolTip = 
+	 "Enter the number of bars used in the calculation of the smoothing factor used in the calculation of the moving average."]	,
+	double VAR_TP1_LONG(  0.382) [DisplayName = "V_TP1_LONG", ToolTip = 
+	 "V_TP1_LONG"]	,		 			
+	double VAR_TP2_LONG(  0.618) [DisplayName = "V_TP2_LONG", ToolTip = 
+	 "V_TP2_LONG"]	,
+	double VAR_TP1_SHORT(  0.382) [DisplayName = "V_TP1_SHORT", ToolTip = 
+	 "V_TP1_SHORT"]	,
+	double VAR_TP2_SHORT(  0.618) [DisplayName = "V_TP2_SHORT", ToolTip = 
+	 "V_TP2_SHORT"]	,
+	double V_BARS_SINCE_ENTRY(  5) [DisplayName = "V_BARS_SINCE_ENTRY", ToolTip = 
+	 "V_BARS_SINCE_ENTRY"]	 	 	 	 			 		 			
+;
+
+variables:
+	double v_factor1(0),
+	double v_factor2(0),
+	double v_factor3(0),
+	double v_factor4(0),
+	double v_resultado(0),
+	double v_valor_tick ( Minmove / Pricescale ), //cuidado con simbolos cargados por 3rd party porque esto puede modificar la estrategia
+	intrabarpersist double OnePriceTick( 0 ),
+	v_contracts (18),
+	v_contracts_short (6),
+	v_contracts_tp (12),
+	MP ( 0 ),
+	v_trading_days (365),
+	v_RawProb_75( 0.67447505 ), //RawProb para un confidence interval del 75%. Si queremos otro confidence interval entonces hay que calcular el nuevo RawProb.
+	//Para ello, hay que ir modificando la función 	ProbBelow_afc, para que retorne la probabilidad que queremos. Ejemplo para que retorne 95%:
+	// ProbBelow_afc= NormSCDensity( 1.6449) *1000 
+	//95%: 1.6449
+	//99%: 2.3265
+	//62%: 0.305
+	v_RawProb_95( 1.6449 ),
+	v_RawProb_90( 1.2832 ),
+	v_RawProb_62( 0.30535 ),
+	v_Euler (2.71828182845904),
+	v_BarsToGo (1), //consideramos expiry date a 7 días
+	v_Volty( 0 ), 
+	//v_VIX_Volty( 0 , Data3),
+	v_CurrentPrice (0),
+	v_TargetPrice_UP_62 (0),
+	v_TargetPrice_LOW_62 (0),	
+	v_TargetPrice_UP_75 (0),
+	v_TargetPrice_LOW_75 (0),
+	v_TargetPrice_UP_90 (0),
+	v_TargetPrice_LOW_90 (0),	
+	v_TargetPrice_UP_95 (0),
+	v_TargetPrice_LOW_95 (0),	
+	v_sl_long (-1),{SL de una operacion de long}
+	v_sl_long_dj (-1),{SL de una operacion de long}
+	v_tp1_long (0), {TP de una operacion de long}
+	v_tp2_long (0), {TP de una operacion de long}
+	v_tp1_long_dj (0), {TP de una operacion de long}
+	v_tp2_long_dj (0), {TP de una operacion de long}
+	v_tp_long_tot (-1),	
+	v_sl_short (-1), {SL de una operacion de short}
+	v_sl_short_dj (-1), {SL de una operacion de short}
+	v_tp1_short (0), {TP de una operacion de short}	
+	v_tp2_short (0), {TP de una operacion de short}		
+	v_tp1_short_dj (0), {TP de una operacion de short}	
+	v_tp2_short_dj (0), {TP de una operacion de short}	
+	v_tp_short_tot (-1),
+	v_salidas (0),
+	v_inutil (0),
+	ReturnValue( 0),
+	oParCl( 0), 
+	oParOp( 0 ), 
+	oPosition( 0 ), 
+	oTransition( 0 ),
+	ReturnValue_Data3( 0, Data3),
+	oParCl_Data3( 0, Data3), 
+	oParOp_Data3( 0, Data3 ), 
+	oPosition_Data3( 0, Data3 ), 
+	oTransition_Data3( 0, Data3 ),		
+	v_pdte_venta (0),
+	double v_precio_venta (0),
+	v_pdte_compra (0),
+	double v_precio_compra (0),
+	double v_calc1 (0),	
+	double v_calc2 (0),
+	double v_calc3 (0),
+	double v_calc4 (0),
+	double v_short_directo (0),
+	double v_long_directo (0),
+	double v_limite_up (0),
+	double v_limite_down (0),
+	double ATR (0),	
+	double ATR_fast (0),			
+	double AvgExp (0),
+	double v_diff (0),
+	double ClosedEquity( 0 ),
+    double UpperBand(0) ,
+	double LowerBand(0),
+	double MidBand(0),
+    double UpperBand_PSAR(0) ,
+	double LowerBand_PSAR(0),
+	double MidBand_PSAR(0),
+    double Avg(0) ,
+	double SDev(0),
+	double Upper_SDev(0)  	 ,
+	double Lower_SDev(0) ,
+	Loop (0),
+	double LRV_Midline (0),
+    double TgtBar(0), 
+    double oLRSlope(0), 
+    double oLRAngle(0), 
+    double oLRIntercept(0),  
+    double oLRValue(0),
+	double LRV_Midline_PSAR (0),
+    double TgtBar_PSAR(0), 
+    double oLRSlope_PSAR(0), 
+    double oLRAngle_PSAR(0), 
+    double oLRIntercept_PSAR(0),  
+    double oLRValue_PSAR(0),     
+    double v_resultado_d1 (0)  ,    
+    double v_resultado_d2 (0)  ,
+    double Tenkan( 0 ),
+	double Kijun( 0 ),
+	double v_highest(0),
+	double v_lowest (0)   ,
+	double v_highest_dj(0),
+	double v_lowest_dj (0)   ,	
+	double v_entry_long (0)  ,	
+	double v_entry_SHORT (0)  ,
+    double LRV_diff(0), 
+    double LRV_rapida(0),
+    double LRV_lenta(0),     	
+	int v_num_entradas_tendencia_long (0),
+	int v_num_entradas_tendencia_short (0),
+	v_num_velas_tendencia (0)
+      ;       
+
+
+		
+//Calculo del valor del tick
+once
+begin
+	OnePriceTick = MinMove / PriceScale;
+end;
+		
+//Calculo de vars
+ReturnValue = ParabolicSAR( AfStep, AfLimit, oParCl, oParOp, oPosition, oTransition ); {Recalculamos PSAR}
+ReturnValue_Data3 = ParabolicSAR( AfStep, AfLimit, oParCl_Data3, oParOp_Data3, oPosition_Data3, oTransition_Data3 ) of Data3; {Recalculamos PSAR}
+LowerBand = BollingerBand( close, 20, -2 );
+UpperBand = BollingerBand( close, 20, 2 );
+MidBand = (UpperBand + LowerBand)/2;
+SDev = StandardDev( MidBand, 20, 1 );
+Upper_SDev=  MidBand + 1 * SDev;
+Lower_SDev=  MidBand - 1 * SDev;
+Avg = AverageFC( MidBand, 20 );
+LRV_rapida=LinearRegValue( close, 4, 0 );
+LRV_lenta=LinearRegValue( close, 9, 0 );
+MP=Marketposition;
+
+//Calculo Ichimoku
+Tenkan = 0.5 * ( Highest( High, V_TK_LENGTH ) + Lowest( Low, V_TK_LENGTH ) );
+Kijun = 0.5 * ( Highest( High, V_KJ_LENGTH ) + Lowest( Low, V_KJ_LENGTH ) );
+
+//Calculos Aumento lotaje
+
+//if floor(Netprofit/10500)>=1 then v_contracts=12 + floor(Netprofit/10500) else v_contracts=12;
+
+/////////////////// Para el DJ
+
+{Cambio a alcista}
+if oTransition_Data3 = 1 then begin { Si es la primera vela de tendencia alcista}
+	v_tp1_long_dj= oParCl_Data3[1] + Absvalue(oParCl_Data3 - oParCl_Data3[1])*VAR_TP1_LONG;
+	v_tp2_long_dj= oParCl_Data3[1] + Absvalue(oParCl_Data3 - oParCl_Data3[1])*VAR_TP2_LONG;
+	//v_tp1_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*0.618;
+	//v_tp2_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*1;	
+	v_highest_dj=-99999;
+end;
+
+{Cambio a bajista}
+if oTransition_Data3 = -1 then begin { Si es la primera vela de tendencia bajista}
+	v_tp1_short_dj= oParCl_Data3[1] - Absvalue(oParCl_Data3 - oParCl_Data3[1])*VAR_TP1_SHORT;
+	v_tp2_short_dj= oParCl_Data3[1] - Absvalue(oParCl_Data3 - oParCl_Data3[1])*VAR_TP2_SHORT;
+	//v_tp1_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*0.618;
+	//v_tp2_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*1;	
+	v_lowest_dj=99999;
+
+end;
+
+v_highest_dj=Maxlist(v_highest_dj,High of Data3);
+v_lowest_dj=Minlist(v_lowest_dj,Low of Data3);
+	
+
+/////////////////// Para el SP
+
+{Cambio a alcista}
+if oTransition = 1 then begin { Si es la primera vela de tendencia alcista}
+	v_tp1_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*VAR_TP1_LONG;
+	v_tp2_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*VAR_TP2_LONG;
+	//v_tp1_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*0.618;
+	//v_tp2_long= oParCl[1] + Absvalue(oParCl - oParCl[1])*1;	
+	v_highest=-99999;
+	v_num_entradas_tendencia_long=0;
+	v_num_entradas_tendencia_short=0;
+	v_num_velas_tendencia=1;
+end;
+
+{Cambio a bajista}
+if oTransition = -1 then begin { Si es la primera vela de tendencia bajista}
+	v_tp1_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*VAR_TP1_SHORT;
+	v_tp2_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*VAR_TP2_SHORT;
+	//v_tp1_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*0.618;
+	//v_tp2_short= oParCl[1] - Absvalue(oParCl - oParCl[1])*1;	
+	v_lowest=99999;
+	v_num_entradas_tendencia_long=0;
+	v_num_entradas_tendencia_short=0;
+	v_num_velas_tendencia=1;
+end;
+
+if oTransition=0 then v_num_velas_tendencia=v_num_velas_tendencia+1;
+
+v_highest=Maxlist(v_highest,High);
+v_lowest=Minlist(v_lowest,Low);
+	
+
+//************INICIO DE ESTRATEGIAS CON TP Y SL
+
+//******MP=0
+
+
+
+if MP=0 Then Begin
+
+
+//*****************LONG			
+
+//Entrada limitada en tendencia bajista
+			
+			if {Tenkan > Kijun and} oPosition =-1 and oPosition_Data3=-1  {and close>open} then begin					
+				
+				v_entry_long=oParCl;
+				//v_sl_long= minlist(LRV_rapida,LRV_lenta,Low);
+				v_sl_long=v_lowest;
+				v_sl_long_dj=v_lowest_dj;
+				v_tp1_long= oParCl + Absvalue(v_sl_long - oParCl)*VAR_TP1_LONG;
+				v_tp2_long= oParCl + Absvalue(v_sl_long - oParCl)*VAR_TP2_LONG;
+				v_tp1_long_dj= oParCl_Data3 + Absvalue(v_sl_long_dj - oParCl_Data3)*VAR_TP1_LONG;
+				v_tp2_long_dj= oParCl_Data3 + Absvalue(v_sl_long_dj - oParCl_Data3)*VAR_TP2_LONG;				
+				Buy ("LE_LIM") v_contracts contracts next bar at v_entry_long stop;
+				//Sell ("LE_SL") next bar at v_TargetPrice_LOW_62 - 1*OnePriceTick  stop;
+				//Sell ("LE_SL") next bar at v_TargetPrice_LOW_75 - 1*OnePriceTick  stop;
+				//Sell ("LE_SL") next bar at Low  stop;
+					Sell ("LE_LIM_SL") next bar at v_sl_long-OnePriceTick  stop;
+					Sell ("LE_LIM_TP1") v_contracts/2 contracts next bar at v_tp1_long limit;
+					Sell ("LE_LIM_TP2") v_contracts/2 contracts next bar at v_tp2_long limit;
+			end;
+
+
+//Entrada en tendencia alcista
+
+			if {Tenkan > Kijun and} oPosition =1 and oPosition_Data3=1 and v_highest<v_tp2_long and v_highest_dj<v_tp2_long_dj {close>open and} {and v_num_entradas_tendencia_long=0} and v_num_velas_tendencia<5 then begin					
+				
+				//v_sl_long= minlist(LRV_rapida,LRV_lenta,Low);
+				v_sl_long=oParCl;
+				v_sl_long_dj=oParCl_Data3;
+				
+				if close < v_tp1_long and v_highest_dj < v_tp1_long_dj then begin
+					Buy ("LE") v_contracts contracts this bar at close;
+					Sell ("LE_TP1") v_contracts/2 contracts next bar at v_tp1_long limit;
+					Sell ("LE_TP2") v_contracts/2 contracts next bar at v_tp2_long limit;
+					//Sell ("LE_SL") next bar at v_TargetPrice_LOW_62 - 1*OnePriceTick  stop;
+					//Sell ("LE_SL") next bar at v_TargetPrice_LOW_75 - 1*OnePriceTick  stop;
+					//Sell ("LE_SL") next bar at Low  stop;
+				end;
+				
+				if close >= v_tp1_long or v_highest_dj > v_tp1_long_dj then begin
+					Buy ("LE_7") v_contracts/2 contracts this bar at close;
+					Sell ("LE_TP2_7") v_contracts/2 contracts next bar at v_tp2_long limit;
+					//Sell ("LE_SL") next bar at v_TargetPrice_LOW_62 - 1*OnePriceTick  stop;
+					//Sell ("LE_SL") next bar at v_TargetPrice_LOW_75 - 1*OnePriceTick  stop;
+					//Sell ("LE_SL") next bar at Low  stop;
+				end;
+				
+					Sell ("LE_SL") next bar at v_sl_long-OnePriceTick  stop;
+				
+
+			end; //end if Tenkan > Kijun 
+	
+//************SHORT	
+
+//Entrada limitada en tendencia alcista
+			if  Kijun >= Tenkan and oPosition =1 and oPosition_Data3=1 {and close<open} then begin					
+				
+				v_entry_short=oParCl;
+				//v_sl_short=maxlist(LRV_rapida,LRV_lenta,High);
+				v_sl_short=v_highest;			
+				v_sl_short_dj=v_highest_dj;	
+				v_tp1_short= oParCl - Absvalue(v_sl_short - oParCl)*VAR_TP1_SHORT;
+				v_tp2_short= oParCl - Absvalue(v_sl_short - oParCl)*VAR_TP2_SHORT;		
+				v_tp1_short_dj= oParCl_Data3 - Absvalue(v_sl_short_dj - oParCl_Data3)*VAR_TP1_SHORT;
+				v_tp2_short_dj= oParCl_Data3 - Absvalue(v_sl_short_dj - oParCl_Data3)*VAR_TP2_SHORT;						
+				Sellshort ("SE_LIM") v_contracts_short contracts next bar at v_entry_short stop;	
+				//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_62 + 1*OnePriceTick  stop; 
+				//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_75 + 1*OnePriceTick  stop; 
+				//Buy To Cover ("SE_SL") next bar at High  stop; 
+					Buy To Cover ("SE_LIM_SL") next bar at v_sl_short+OnePriceTick  stop; 
+					Buy To Cover ("SE_LIM_TP1") v_contracts_short/2 contracts next bar at v_tp1_short limit;
+					Buy To Cover ("SE_LIM_TP2") v_contracts_short/2 contracts next bar at v_tp2_short limit;
+			end;	
+
+
+//Entrada en tendencia bajista
+
+			if  Kijun >= Tenkan and oPosition =-1 and oPosition_Data3=-1 and v_lowest>v_tp2_short and v_lowest_dj>v_tp2_short_dj {and close<open} {and v_num_entradas_tendencia_short=0} and v_num_velas_tendencia<5 then begin					
+
+				//v_sl_short=maxlist(LRV_rapida,LRV_lenta,High);			
+				v_sl_short=oParCl;
+				v_sl_short_dj=oParCl_Data3;
+				
+				if close > v_tp1_short and v_lowest_dj > v_tp1_short_dj then begin
+					Sellshort ("SE") v_contracts_short contracts this bar at close;	
+					//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_62 + 1*OnePriceTick  stop; 
+					//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_75 + 1*OnePriceTick  stop; 
+					//Buy To Cover ("SE_SL") next bar at High  stop; 	
+						Buy To Cover ("SE_TP1") v_contracts_short/2 contracts next bar at v_tp1_short limit;
+						Buy To Cover ("SE_TP2") v_contracts_short/2 contracts next bar at v_tp2_short limit;	
+				end;
+				
+				if close <= v_tp1_short or v_lowest_dj < v_tp1_short_dj then begin
+					Sellshort ("SE_7") v_contracts_short/2 contracts this bar at close;	
+					//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_62 + 1*OnePriceTick  stop; 
+					//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_75 + 1*OnePriceTick  stop; 
+					//Buy To Cover ("SE_SL") next bar at High  stop; 	
+						Buy To Cover ("SE_TP2_7") v_contracts_short/2 contracts next bar at v_tp2_short limit;				
+				end;
+				
+					Buy To Cover ("SE_SL") next bar at v_sl_short+OnePriceTick  stop; 
+				
+					
+			end; //end if  Kijun > Tenkan 
+
+
+	
+end;//end  MP=0 
+
+
+//******MP=1
+if MP=1 Then Begin
+
+if v_num_entradas_tendencia_long=0 then v_num_entradas_tendencia_long=1;
+
+	//v_sl_long= minlist(LRV_rapida,LRV_lenta,Low);
+	v_sl_long=oParCl;
+	
+	//if oPosition_Data3 =1 then v_sl_long_dj=oParCl_Data3;
+	v_sl_long_dj=oParCl_Data3; //DEJAMOS ESTE ACTIVO PORQUE DA MEJORES RESULTADOS. ES DECIR, SI AL ENTRAR EN LIMITADA, EL DJ NO SE HA PUESTO TODAVIA LONG EN EL PSAR, SE CERRARÁ LA OPERACIÓN.
+
+
+Sell ("LE_SL*") next bar at v_sl_long-OnePriceTick  stop;
+if currentcontracts=v_contracts and high of Data3 < v_tp1_long_dj then Sell ("LE_TP1*") v_contracts/2 contracts next bar at v_tp1_long limit;
+Sell ("LE_TP2*")  next bar at v_tp2_long limit;
+
+
+//EXITS SP
+if Dayofweek(date)=5 and close of Data2 < open of Data2 then Sell ("LE_exit") this bar at close;	
+if Barssinceentry=0 and close < open then Sell ("LE_exit_CLOSE") this bar at close;
+//if Barssinceentry=0 and close of Data3 < open of Data3 then Sell ("LE_exit_CLOSE_DJ") this bar at close;
+//if Barssinceentry=0 and close < oParCl[1] then Sell ("LE_exit_CLOSE_PSAR") this bar at close;
+
+//EXITS DJ
+//if high of Data3 >= v_tp1_long_dj then Sell ("LE_TP1_DJ") v_contracts/2 contracts this bar at close;
+if oPosition_Data3=-1 then Sell ("LE_PSAR_DJ") this bar at close;
+if currentcontracts=v_contracts and high of Data3 >= v_tp1_long_dj then Sell ("LE_TP1_DJ") v_contracts/2 contracts this bar at close;
+if high of Data3 >= v_tp2_long_dj then Sell ("LE_TP2_DJ") this bar at close;
+if low of Data3 <= v_sl_long_dj-OnePriceTick  then Sell ("LE_SL_DJ") this bar at close;
+ 
+//SHORT	
+//Entrada limitada en tendencia alcista
+			if  Kijun >= Tenkan and oPosition =1 and oPosition_Data3=1 {and close<open} then begin					
+				
+				v_entry_short=oParCl;
+				//v_sl_short=maxlist(LRV_rapida,LRV_lenta,High);				
+				v_sl_short=v_highest;	
+				v_sl_short_dj=v_highest_dj;			
+				v_tp1_short= oParCl - Absvalue(v_sl_short - oParCl)*VAR_TP1_SHORT;
+				v_tp2_short= oParCl - Absvalue(v_sl_short - oParCl)*VAR_TP2_SHORT;	
+				v_tp1_short_dj= oParCl_Data3 - Absvalue(v_sl_short_dj - oParCl_Data3)*VAR_TP1_SHORT;
+				v_tp2_short_dj= oParCl_Data3 - Absvalue(v_sl_short_dj - oParCl_Data3)*VAR_TP2_SHORT;						
+				Sellshort ("SE_LIM*") v_contracts_short contracts next bar at v_entry_short stop;	
+				//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_62 + 1*OnePriceTick  stop; 
+				//Buy To Cover ("SE_SL") next bar at v_TargetPrice_UP_75 + 1*OnePriceTick  stop; 
+				//Buy To Cover ("SE_SL") next bar at High  stop; 
+				Buy To Cover ("SE_LIM_SL*") next bar at v_sl_short+OnePriceTick  stop; 
+				Buy To Cover ("SE_LIM_TP1*") v_contracts_short/2 contracts next bar at v_tp1_short limit;
+				Buy To Cover ("SE_LIM_TP2*") v_contracts_short/2 contracts next bar at v_tp2_short limit;
+			end;	
+
+
+
+
+end;//end  MP=1
+
+
+//******MP=-1
+if MP=-1 Then Begin
+
+if v_num_entradas_tendencia_short=0 then v_num_entradas_tendencia_short=1;
+
+		//v_sl_short=maxlist(LRV_rapida,LRV_lenta,High);	
+	v_sl_short=oParCl;
+	//if oPosition_Data3 =-1 then v_sl_short_DJ=oParCl_Data3;
+	v_sl_short_DJ=oParCl_Data3; //DEJAMOS ESTE ACTIVO PORQUE DA MEJORES RESULTADOS. ES DECIR, SI AL ENTRAR EN LIMITADA, EL DJ NO SE HA PUESTO TODAVIA SHORT EN EL PSAR, SE CERRARÁ LA OPERACIÓN.
+	
+Buy To Cover ("SE_SL*") next bar at v_sl_short+OnePriceTick  stop; 
+if Currentcontracts=v_contracts_short and low of Data3 > v_tp1_short_dj then Buy To Cover ("SE_TP1*") v_contracts_short/2 contracts next bar at v_tp1_short limit;
+Buy To Cover ("SE_TP2*")  next bar at v_tp2_short limit;
+
+
+//EXITS SP
+if Dayofweek(date)=5 and close of Data2 > open of Data2  then Buytocover ("SE_exit") this bar at close;
+if Barssinceentry=0 and close > open then Buytocover ("SE_exit_CLOSE") this bar at close;
+//if Kijun < Tenkan then Buytocover ("SE_exit_CLOSE_TK_KJ") this bar at close;
+//if Barssinceentry=0 and close > oParCl[1] then Buytocover ("SE_exit_CLOSE_PSAR") this bar at close;
+
+//EXITS DJ
+//if low of Data3 <= v_tp1_short_dj then Buytocover ("SE_TP1_dj") v_contracts/2 contracts this bar at close;
+if oPosition_data3=1 then  Buytocover ("SE_PSAR_DJ") this bar at close;
+if Currentcontracts=v_contracts_short and low of Data3 <= v_tp1_short_dj then Buytocover ("SE_TP1_dj") v_contracts_short/2 contracts this bar at close;
+if low of Data3<= v_tp2_short_dj then Buytocover ("SE_TP2_dj") this bar at close;
+if high of Data3>= v_sl_short_dj+OnePriceTick  then Buytocover ("SE_SL_dj") this bar at close;
+ 
+
+
+//LONG		
+//Entrada limitada en tendencia bajista
+			
+			if {Tenkan > Kijun and} oPosition =-1 and oPosition_Data3=-1 {and close>open} then begin					
+				
+				v_entry_long=oParCl;
+				//v_sl_long= minlist(LRV_rapida,LRV_lenta,Low);
+				v_sl_long=v_lowest;
+				v_sl_long_dj=v_lowest_dj;				
+				v_tp1_long= oParCl + Absvalue(v_sl_long - oParCl)*VAR_TP1_LONG;
+				v_tp2_long= oParCl + Absvalue(v_sl_long - oParCl)*VAR_TP2_LONG;
+				v_tp1_long_dj= oParCl_Data3 + Absvalue(v_sl_long_dj - oParCl_Data3)*VAR_TP1_LONG;
+				v_tp2_long_dj= oParCl_Data3 + Absvalue(v_sl_long_dj - oParCl_Data3)*VAR_TP2_LONG;					
+				Buy ("LE_LIM*") v_contracts contracts next bar at v_entry_long stop;
+				//Sell ("LE_SL") next bar at v_TargetPrice_LOW_62 - 1*OnePriceTick  stop;
+				//Sell ("LE_SL") next bar at v_TargetPrice_LOW_75 - 1*OnePriceTick  stop;
+				//Sell ("LE_SL") next bar at Low  stop;
+				Sell ("LE_LIM_SL*") next bar at v_sl_long-OnePriceTick  stop;
+				Sell ("LE_LIM_TP1*") v_contracts/2 contracts next bar at v_tp1_long limit;
+				Sell ("LE_LIM_TP2*") v_contracts/2 contracts next bar at v_tp2_long limit;
+			end;
+
+
+
+end;//end  MP=-1
+//************FIN DE ESTRATEGIA CON TP Y SL
