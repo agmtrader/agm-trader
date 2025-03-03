@@ -5,7 +5,8 @@ def handle_exception(func):
     def wrapper(*args, **kwargs):
         try:
             response = func(*args, **kwargs)
-            return Response.success(response)
+            return response
         except Exception as e:
-            return Response.error(e)
+            logger.error(f"Error in {func.__name__}: {e}")
+            return e
     return wrapper
