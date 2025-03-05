@@ -20,7 +20,7 @@ retry_requests==2.0.0
 websocket_client==1.8.0
 Werkzeug==3.1.0
 Flask-SocketIO==5.3.7
-gevent==22.10.2
+gevent==23.9.0
 gevent-websocket==0.10.1
 
 # Database
@@ -29,7 +29,7 @@ SQLAlchemy==2.0.35
 
 # Text Processing and Utilities
 beautifulsoup4==4.12.3
-Jinja2==3.1.4
+Jinja2==3.1.5
 nltk==3.9.1
 openpyxl==3.1.5
 premailer==3.10.0
