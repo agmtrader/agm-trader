@@ -86,6 +86,7 @@ class IchimokuBase(Strategy):
         # Take profit signal
 
         # Exit signal
+        
         return 'STAY'
     
     def calculate_tenkan(self, data):

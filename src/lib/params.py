@@ -8,8 +8,10 @@ class BaseStrategyParams(ABC):
         self.historicalData = {}
         self.openOrders = []
         self.executedOrders = []
+        self.contracts = []
 
     def to_dict(self):
+
         # Convert datetime columns to strings in historicalData
         for symbol, data in self.historicalData.items():
             for entry in data:
@@ -20,8 +22,8 @@ class BaseStrategyParams(ABC):
             'position': self.position,
             'historical_data': self.historicalData,
             'open_orders': self.openOrders,
-            
-            'executed_orders': self.executedOrders
+            'executed_orders': self.executedOrders,
+            'contracts': [contract.dict() for contract in self.contracts]
         }
 
 class IchimokuBaseParams(BaseStrategyParams):
@@ -38,7 +40,6 @@ class IchimokuBaseParams(BaseStrategyParams):
         
     def to_dict(self):
         ichimoku_dict = {
-            'contracts': [contract.dict() for contract in self.contracts],
             'tenkan': self.tenkan,
             'kijun': self.kijun,
             'number_of_contracts': self.number_of_contracts,

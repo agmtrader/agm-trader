@@ -34,9 +34,11 @@ class Trader:
         self.connect()
 
         try:
+
             self.trading_thread = threading.Thread(target=self.run_strategy, args=('ICHIMOKU_BASE',))
             self.trading_thread.start()
             nest_asyncio.apply()
+            
         except Exception as e:
             logger.error(f"Error starting trading thread: {str(e)}")
             raise Exception(f"Error starting trading thread: {str(e)}")
@@ -108,6 +110,8 @@ class Trader:
         else:
             raise Exception(f"Strategy {strategy_name} not found")
         
+        #self.run_backtest(strategy_name)
+        
         # Get historical data
         for contract in strategy.params.contracts:
             strategy.params.historicalData[contract.symbol] = self.get_historical_data(contract)
@@ -126,7 +130,7 @@ class Trader:
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.executedOrders = self.get_completed_orders()
                 strategy.params.position = self.get_position(strategy.params.contracts[0])
-                strategy.params.latestPrice = self.get_latest_price(strategy.params.contracts[0])
+                #strategy.params.latestPrice = self.get_latest_price(strategy.params.contracts[0])
 
                 # Run strategy
                 self.decision = strategy.run()
@@ -157,17 +161,89 @@ class Trader:
         except Exception as e:
             logger.error(f"Error running strategy: {str(e)}")
             raise Exception(f"Error running strategy: {str(e)}")
+
+    def run_backtest(self, strategy_name: str):
+        """
+        Run a backtest of the strategy using historical data.
         
-    def stop_strategy(self):
-        logger.info("Stopping strategy and trading thread")
-        self.running = False
-        if hasattr(self, 'trading_thread') and self.trading_thread.is_alive():
-            self.trading_thread.join(timeout=5)
-            if self.trading_thread.is_alive():
-                logger.warning("Trading thread did not stop gracefully within timeout")
-        self.strategy = None
-        self.decision = None
-        logger.success("Strategy and trading thread stopped")
+        Args:
+            strategy_name (str): Name of the strategy to backtest
+            start_date (str, optional): Start date for backtest in 'YYYY-MM-DD' format
+            end_date (str, optional): End date for backtest in 'YYYY-MM-DD' format
+            
+        Returns:
+            pd.DataFrame: DataFrame containing backtest results
+        """
+        import pandas as pd
+        from datetime import datetime, timedelta
+
+        logger.announcement(f"Running backtest for {strategy_name}", 'info')
+        
+        if strategy_name == 'ICHIMOKU_BASE':
+            strategy = IchimokuBase(IchimokuBaseParams())
+        else:
+            raise Exception(f"Strategy {strategy_name} not found")
+        
+        # Get historical data for all contracts
+        historical_data = {}
+        for contract in strategy.params.contracts:
+            historical_data[contract.symbol] = self.get_historical_data(contract)
+            
+        # Convert historical data to DataFrame
+        df = pd.DataFrame(historical_data[strategy.params.contracts[0].symbol])
+
+        # Convert date strings to datetime
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Initialize backtest results
+        results = []
+        position = 0
+        entry_price = 0
+        
+        # Run strategy on each historical data point
+        for i in range(len(df)):
+            current_data = df.iloc[:i+1]
+            
+            # Update strategy parameters with historical data
+            strategy.params.historicalData = {contract.symbol: current_data.to_dict('records') 
+                                           for contract in strategy.params.contracts}
+            strategy.params.position = position
+            strategy.params.openOrders = []
+            strategy.params.executedOrders = []
+            
+            # Run strategy
+            decision = strategy.run()
+            
+            # Record results
+            result = {
+                'date': df.iloc[i]['date'],
+                'close': df.iloc[i]['close'],
+                'decision': decision,
+                'position': position,
+                'returns': 0
+            }
+            
+            # Update position and calculate returns
+            if decision == 'BUY':
+                position = 1
+                entry_price = df.iloc[i]['close']
+            elif decision == 'SELL':
+                position = -1
+                entry_price = df.iloc[i]['close']
+                
+            # Calculate returns if we have a position
+            if position != 0:
+                result['returns'] = (df.iloc[i]['close'] - entry_price) / entry_price * 100
+                
+            results.append(result)
+            
+        # Convert results to DataFrame
+        results_df = pd.DataFrame(results)
+        results_df.to_csv('backtest_results.csv', index=False)
+        
+
+        logger.success(f"Backtest completed successfully")
+        return results_df
 
     def get_historical_data(self, contract: Contract):
         logger.info(f"Getting historical data")
