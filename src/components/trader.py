@@ -8,11 +8,13 @@ import os
 from datetime import datetime
 import time
 import math
+import json
+from src.models.trader import db
 
 from src.components.strategy import IchimokuBase
 from src.lib.params import IchimokuBaseParams
 
-SLEEP_TIME = 1
+SLEEP_TIME = 86400
 
 class Trader:
 
@@ -26,6 +28,8 @@ class Trader:
         self.strategy = None
         self.decision = None
         self.account_summary = None
+
+        self.db = db
 
         self.connect()
 
@@ -59,7 +63,7 @@ class Trader:
             async def _connect():
                 while True:
                     try:
-                        await self.ib.connectAsync(os.getenv('IBKR_HOST'), os.getenv('IBKR_PORT'), clientId=1)
+                        await self.ib.connectAsync('127.0.0.1', 4002, clientId=1)
                         if self.ib.isConnected():
                             return True
                     except Exception as e:
@@ -117,12 +121,10 @@ class Trader:
                 if not self.running:
                     exit()
 
-                # Update basic strategy params
                 self.account_summary = self.get_account_summary()
                 
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.executedOrders = self.get_completed_orders()
-
                 strategy.params.position = self.get_position(strategy.params.contracts[0])
                 strategy.params.latestPrice = self.get_latest_price(strategy.params.contracts[0])
 
@@ -130,19 +132,24 @@ class Trader:
                 self.decision = strategy.run()
                 logger.announcement(f"Ran strategy at {datetime.now()}", 'info')
                 logger.announcement(f"Decision: {self.decision}", 'success')
+
+                # Store decision in database
+                if self.decision:
+                    db.create('decision', {'decision': self.decision})
+
                 if self.decision != 'BUY' and self.decision != 'SELL':
                     time.sleep(SLEEP_TIME)
                     continue
 
                 # Create orders for the strategy
-                order = strategy.create_order(self.decision)
+                #order = strategy.create_order(self.decision)
 
                 # Place order
                 #self.place_order(order)
 
                 # Update strategy params once more
                 strategy.params.openOrders = self.get_open_orders()
-                strategy.params.position = self.get_position()
+                strategy.params.position = self.get_position(strategy.params.contracts[0])
                 
                 # Wait for 1 second before running the strategy again
                 time.sleep(SLEEP_TIME)
@@ -312,10 +319,12 @@ class TraderSnapshot:
         self.strategy = trader.strategy
         self.decision = trader.decision
         self.account_summary = trader.account_summary
+        self.decision_history = json.loads(trader.db.read('decision').data.decode('utf-8'))
 
     def to_dict(self):
         return {
             'strategy': self.strategy.to_dict(),
             'decision': self.decision,
-            'account_summary': self.account_summary
+            'account_summary': self.account_summary,
+            'decision_history': self.decision_history
         }

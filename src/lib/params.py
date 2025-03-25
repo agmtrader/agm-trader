@@ -18,31 +18,32 @@ class BaseStrategyParams(ABC):
         
         return {
             'position': self.position,
-            'historicalData': self.historicalData,
-            'openOrders': self.openOrders,
-            'executedOrders': self.executedOrders
+            'historical_data': self.historicalData,
+            'open_orders': self.openOrders,
+            
+            'executed_orders': self.executedOrders
         }
 
 class IchimokuBaseParams(BaseStrategyParams):
     def __init__(self):
         super().__init__()
-        mes = Future('MES', '202503', 'CME')
-        mym = Future('MYM', '202503', 'CBOT')
+        mes = Future('MES', '202506', 'CME')
+        mym = Future('MYM', '202506', 'CBOT')
         self.contracts = [mes, mym]
         self.tenkan = 0
         self.kijun = 0
-        self.current_psar_mes = 0
-        self.current_psar_mym = 0
         self.number_of_contracts = 0
+        self.psar_mes = []
+        self.psar_mym = []
         
     def to_dict(self):
         ichimoku_dict = {
             'contracts': [contract.dict() for contract in self.contracts],
             'tenkan': self.tenkan,
             'kijun': self.kijun,
-            'current_psar_mes': self.current_psar_mes,
-            'current_psar_mym': self.current_psar_mym,
-            'number_of_contracts': self.number_of_contracts
+            'number_of_contracts': self.number_of_contracts,
+            'psar_mes': self.psar_mes,
+            'psar_mym': self.psar_mym
         }
         return {
             **ichimoku_dict,

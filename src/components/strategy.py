@@ -27,20 +27,21 @@ class IchimokuBase(Strategy):
 
         logger.info(f'Executing strategy...')
 
+        # Calculate Tenkan and Kijun
         tenkan = self.calculate_tenkan(self.params.historicalData['MES'])
         kijun = self.calculate_kijun(self.params.historicalData['MES'])
-
         self.params.tenkan = tenkan
         self.params.kijun = kijun
 
+        # Calculate current PSAR
         psar_mes = self.calculate_parabolic_sar(self.params.historicalData['MES'])
         psar_mym = self.calculate_parabolic_sar(self.params.historicalData['MYM'])
+        self.params.psar_mes = psar_mes.tolist()
+        self.params.psar_mym = psar_mym.tolist()
 
+        # Extract current PSAR
         current_psar_mes = psar_mes[-1]
         current_psar_mym = psar_mym[-1]
-
-        self.params.current_psar_mes = current_psar_mes
-        self.params.current_psar_mym = current_psar_mym
 
         # Has it been 4 candles or less since the psar changed from negative to positive?
         trend_changed, candles_since_change = self.find_recent_trend_change(psar_mes, self.params.historicalData['MES'])
