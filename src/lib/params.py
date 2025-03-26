@@ -9,6 +9,7 @@ class BaseStrategyParams(ABC):
         self.openOrders = []
         self.executedOrders = []
         self.contracts = []
+        self.positions = []
 
     def to_dict(self):
 
@@ -23,7 +24,8 @@ class BaseStrategyParams(ABC):
             'historical_data': self.historicalData,
             'open_orders': self.openOrders,
             'executed_orders': self.executedOrders,
-            'contracts': [contract.dict() for contract in self.contracts]
+            'contracts': [contract.dict() for contract in self.contracts],
+            'positions': self.positions
         }
 
 class IchimokuBaseParams(BaseStrategyParams):

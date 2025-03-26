@@ -38,7 +38,7 @@ class Trader:
             self.trading_thread = threading.Thread(target=self.run_strategy, args=('ICHIMOKU_BASE',))
             self.trading_thread.start()
             nest_asyncio.apply()
-            
+
         except Exception as e:
             logger.error(f"Error starting trading thread: {str(e)}")
             raise Exception(f"Error starting trading thread: {str(e)}")
@@ -110,9 +110,10 @@ class Trader:
         else:
             raise Exception(f"Strategy {strategy_name} not found")
         
-        #self.run_backtest(strategy_name)
+        self.run_backtest(strategy_name)
         
-        # Get historical data
+        # TODO: Fix this so that historical data is saved in the contract object
+        # TODO: Historical data must be updated once per timeframe used (must implement timeframe)
         for contract in strategy.params.contracts:
             strategy.params.historicalData[contract.symbol] = self.get_historical_data(contract)
 
@@ -126,11 +127,10 @@ class Trader:
                     exit()
 
                 self.account_summary = self.get_account_summary()
-                
+
                 strategy.params.openOrders = self.get_open_orders()
                 strategy.params.executedOrders = self.get_completed_orders()
-                strategy.params.position = self.get_position(strategy.params.contracts[0])
-                #strategy.params.latestPrice = self.get_latest_price(strategy.params.contracts[0])
+                strategy.params.positions = self.get_positions()
 
                 # Run strategy
                 self.decision = strategy.run()
@@ -139,21 +139,27 @@ class Trader:
 
                 # Store decision in database
                 if self.decision:
-                    db.create('decision', {'decision': self.decision})
+                    #db.create('decision', {'decision': self.decision})
+                    pass
 
                 if self.decision != 'BUY' and self.decision != 'SELL':
                     time.sleep(SLEEP_TIME)
                     continue
 
-                # Create orders for the strategy
-                #order = strategy.create_order(self.decision)
+                # TODO: Add exit logic
+                if self.decision == 'EXIT':
+                    continue
 
-                # Place order
-                #self.place_order(order)
+                # Create orders for the strategy
+                order = strategy.create_order(self.decision)
+
+                # Place orders in IBKRs
+                self.place_order(order)
 
                 # Update strategy params once more
                 strategy.params.openOrders = self.get_open_orders()
-                strategy.params.position = self.get_position(strategy.params.contracts[0])
+                strategy.params.executedOrders = self.get_completed_orders()
+                strategy.params.positions = self.get_positions()
                 
                 # Wait for 1 second before running the strategy again
                 time.sleep(SLEEP_TIME)
@@ -176,6 +182,7 @@ class Trader:
         """
         import pandas as pd
         from datetime import datetime, timedelta
+        import numpy as np
 
         logger.announcement(f"Running backtest for {strategy_name}", 'info')
         
@@ -199,6 +206,9 @@ class Trader:
         results = []
         position = 0
         entry_price = 0
+        equity = 100  # Starting with 100 as base equity
+        cumulative_returns = 0
+        contracts = 12  # Default number of contracts
         
         # Run strategy on each historical data point
         for i in range(len(df)):
@@ -214,34 +224,55 @@ class Trader:
             # Run strategy
             decision = strategy.run()
             
-            # Record results
+            # Calculate daily returns and equity
+            daily_return = 0
+            if position != 0:
+                daily_return = (df.iloc[i]['close'] - df.iloc[i-1]['close']) / df.iloc[i-1]['close'] * 100
+                cumulative_returns += daily_return
+                equity *= (1 + daily_return/100)
+            
+            # Record results with enhanced data
             result = {
                 'date': df.iloc[i]['date'],
+                'open': df.iloc[i]['open'],
+                'high': df.iloc[i]['high'],
+                'low': df.iloc[i]['low'],
                 'close': df.iloc[i]['close'],
+                'volume': df.iloc[i]['volume'],
                 'decision': decision,
                 'position': position,
-                'returns': 0
+                'daily_return': daily_return,
+                'cumulative_returns': cumulative_returns,
+                'equity': equity,
+                'entry_price': entry_price if position != 0 else None,
+                'contracts': contracts,
+                'tenkan': strategy.params.tenkan,
+                'kijun': strategy.params.kijun,
+                'psar_mes': strategy.params.psar_mes[-1] if strategy.params.psar_mes else None,
+                'psar_mym': strategy.params.psar_mym[-1] if strategy.params.psar_mym else None
             }
             
-            # Update position and calculate returns
+            # Update position and entry price based on strategy decision
             if decision == 'BUY':
                 position = 1
                 entry_price = df.iloc[i]['close']
-            elif decision == 'SELL':
+                contracts = strategy.params.number_of_contracts
+            elif decision == 'SELLSHORT':
                 position = -1
                 entry_price = df.iloc[i]['close']
-                
-            # Calculate returns if we have a position
-            if position != 0:
-                result['returns'] = (df.iloc[i]['close'] - entry_price) / entry_price * 100
+                contracts = strategy.params.number_of_contracts
+            elif decision == 'STAY':
+                # Keep current position and entry price
+                pass
                 
             results.append(result)
             
         # Convert results to DataFrame
         results_df = pd.DataFrame(results)
+        
+        # Save detailed results
         results_df.to_csv('backtest_results.csv', index=False)
         
-
         logger.success(f"Backtest completed successfully")
         return results_df
 
@@ -303,24 +334,21 @@ class Trader:
         except Exception as e:
             logger.error(f"Error getting account summary: {str(e)}")
             raise Exception(f"Error getting account summary: {str(e)}")
-        
-    def get_position(self, contract: Contract):
-        logger.info("Getting position")
+
+    def get_positions(self):
+        logger.info("Getting positions")
         try:
-            async def _get_position():
+            async def _get_positions():
                 positions = self.ib.positions()
                 logger.info(f"You have {len(positions)} positions overall")
-                for position in positions:
-                    if position.contract.symbol == contract.symbol:
-                        return position.position
-                return 0
+                return positions
             
-            position = self._execute(_get_position())
-            logger.success(f"Successfully got position: {position} shares of {contract.symbol}")
-            return position
+            positions = self._execute(_get_positions())
+            logger.success(f"Successfully got positions: {positions}")
+            return positions
         except Exception as e:
-            logger.error(f"Error getting position: {str(e)}")
-            raise Exception(f"Error getting position: {str(e)}")
+            logger.error(f"Error getting positions: {str(e)}")
+            raise Exception(f"Error getting positions: {str(e)}")
 
     def get_completed_orders(self):
         logger.info("Getting completed orders")
@@ -372,13 +400,14 @@ class Trader:
         try:
             async def _place_order():
 
-                contract = Contract()
-                contract.symbol = self.strategy.params.ticker
-                contract.secType = 'STK'
-                contract.currency = 'USD'
-                contract.exchange = 'SMART'
+                # TODO Fix this
+                contract = self.strategy.params.contracts[0]
                 self.ib.qualifyContracts(contract)
-                self.ib.placeOrder(contract, order)
+
+                for o in order:
+                    print(o)
+                    self.ib.placeOrder(contract, o)
+
                 return True
             
             self._execute(_place_order())
