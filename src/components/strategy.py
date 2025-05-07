@@ -49,60 +49,111 @@ class IchimokuBase(Strategy):
 
         # Has it been 4 candles or less since the psar changed from negative to positive?
         trend_changed, candles_since_change = self.find_recent_trend_change(psar_mes, self.params.historicalData['MES'])
-        
-        # If yes, calculate highest high since that change
-        highest_high = None
-        if trend_changed and candles_since_change is not None:
-            highest_high = self.calculate_highest_high_since_change(
-                self.params.historicalData['MES'], 
-                candles_since_change
-            )
 
-        # Get last PSAR of previous downtrend and first PSAR of current uptrend
-        last_down_psar, first_up_psar = self.get_trend_change_psars(psar_mes, self.params.historicalData['MES'])
+        # Calculate highest high and lowest low since the trend change
+        highest_high = None
+        lowest_low = None
+        if trend_changed and candles_since_change is not None:
+
+            # Get last psar of previous downtrend and first psar of current uptrend
+            last_down_psar, first_up_psar = self.get_trend_change_psars(psar_mes, self.params.historicalData['MES'])
+
+            highest_high = self.calculate_highest_high_since_change(self.params.historicalData['MES'], candles_since_change)
+            lowest_low = self.calculate_lowest_low_since_change(self.params.historicalData['MES'], candles_since_change)
         
-        # Buy signal
+        """
+        BUY SIGNALS:
+
+        1. If PSAR MES is negative and PSAR MYM is negative, put a limit buy order at the PSAR MES price
+        (to take the trend change). Open 12 contracts in this occasion.
+
+        2. If the current candle is between the 4 first candles of the positive trend started by the PSAR,
+        and if PSAR MES + and PSAR MYM + and the highest high since the positive trend started by the PSAR
+        is less than 61.8% of the difference between the last PSAR of the previous downtrend and the first PSAR of the current uptrend,
+        we buy the following number of contracts:
+        - If close of the candle where this happens is less than 38.2% of said difference,
+        we buy 12 contracts
+        - If close of the candle where this happens is greater than 38.2% of said difference,
+        we buy 6 contracts only (because we will have already exceeded the Take Profit 1)
+        """
+
         if self.is_psar_negative(current_psar_mes, self.params.historicalData['MES']) and self.is_psar_negative(current_psar_mym, self.params.historicalData['MYM']):
             self.params.number_of_contracts = 12
             logger.warning(f'Buy signal detected. Negative PSAR. 12 contracts')
             return 'BUY'
         elif self.is_psar_positive(current_psar_mes, self.params.historicalData['MES']) and self.is_psar_positive(current_psar_mym, self.params.historicalData['MYM']) and trend_changed and candles_since_change is not None and candles_since_change <= 4:
             difference = abs(last_down_psar - first_up_psar)
-            if highest_high < (difference * 0.618) and highest_high > (difference * 0.382):
-                self.params.number_of_contracts = 6
+            if highest_high < (difference * 0.618):
+                if highest_high < (difference * 0.382):
+                    self.params.number_of_contracts = 12
+                else:
+                    self.params.number_of_contracts = 6
                 logger.warning(f'Buy signal detected. Positive PSAR. 6 contracts')
                 return 'BUY'
-            elif highest_high < (difference * 0.382):
-                self.params.number_of_contracts = 12
-                logger.warning(f'Buy signal detected. Positive PSAR. 12 contracts')
-                return 'BUY'
-        
-        # Sellshort signal
+            
+        """
+        SELLSHORT SIGNALS:
+
+        1. If PSAR MES + and PSAR MYM +, and Kijun >= Tenkan, put a limit sell order at the PSAR MES price
+        (to take the trend change). Open 12 contracts in this occasion.
+
+        2. If the current candle is between the 4 first candles of the negative trend started by the PSAR,
+        and if PSAR MES - and PSAR MYM - and the lowest low since the negative trend started by the PSAR
+        is greater than 61.8% of the difference between the last PSAR of the previous downtrend and the first PSAR of the current uptrend,
+        we sell the following number of contracts:
+        - If close of the candle where this happens is greater than 38.2% of said difference,
+        we sell 12 contracts
+        - If close of the candle where this happens is less than 38.2% of said difference,
+        we sell 6 contracts only (because we will have already exceeded the Take Profit 1)
+        """
+
         if self.is_psar_positive(current_psar_mes, self.params.historicalData['MES']) and self.is_psar_negative(current_psar_mym, self.params.historicalData['MYM']) and kijun >= tenkan:
             self.params.number_of_contracts = 12
             logger.warning(f'Sellshort signal detected. Positive PSAR. 12 contracts')
             return 'SELLSHORT'
         elif self.is_psar_negative(current_psar_mes, self.params.historicalData['MES']) and self.is_psar_positive(current_psar_mym, self.params.historicalData['MYM']) and kijun >= tenkan:
-            self.params.number_of_contracts = 6
-            logger.warning(f'Sellshort signal detected. Negative PSAR. 6 contracts')
-            return 'SELLSHORT'
+            difference = abs(last_down_psar - first_up_psar)
+            if lowest_low > (difference * 0.618):
+                if lowest_low > (difference * 0.382):
+                    self.params.number_of_contracts = 6
+                else:
+                    self.params.number_of_contracts = 12
+                logger.warning(f'Sellshort signal detected. Negative PSAR. 6 contracts')
+                return 'SELLSHORT'
 
-        # Exit signal
+        """
+        EXIT SIGNALS:
+        1. If the weekly candle of MES is red (close < open), exit the long position
+        2. If the weekly candle of MES is green (close > open), exit the short position
+        3. If we have entered with a limit order and the closing of that first entry candle is
+        opposite to the operation, we close. That is, if we are LONG and the closing of the entry
+        candle is red (close < open), we close. If we are SHORT and the closing of the entry
+        candle is green (close > open), we close.
+        4. If we have entered with a limit order and at the closing of that entry candle the PSAR
+        of MYM is not aligned with the PSAR of MES, we close. That is, if we have entered
+        LONG with a limit order and at the closing of that entry candle the PSAR of MYM still
+        SHORT, we close. And vice versa.
+        """
         is_weekly_candle, current_candle, prev_candle = self.get_weekly_candle(self.params.historicalData['MES'])
         
         if is_weekly_candle:
             # If the weekly candle is red (close < open), exit the long position
             if current_candle['close'] < current_candle['open']:
                 logger.warning(f'Weekly exit signal detected. Red weekly candle - exit long position.')
-                return 'EXIT'
+                return 'EXITLONG'
             # If the weekly candle is green (close > open), exit the short position
             elif current_candle['close'] > current_candle['open']:
                 logger.warning(f'Weekly exit signal detected. Green weekly candle - exit short position.')
-                return 'EXIT'
+                return 'EXITSHORT'
+            
         
         return 'STAY'
     
     def create_order(self, action: str):
+
+        current_price = self.params.historicalData['MES'][-1]['close']
+
+
         if action == 'BUY':
 
             limit_order = LimitOrder(
@@ -117,13 +168,14 @@ class IchimokuBase(Strategy):
                 stopPrice=self.params.psar_mes[-1]
             )
 
-            # TODO: Calculate take profit using Fibonacci retracement
+            # Exit contracts 1-6: on 38.2% of the difference between the jump between the last PSAR of the previous downtrend and the first PSAR of the current uptrend.
+            # Exit contracts 7-12: on 61.8% of the difference between the jump between the last PSAR of the previous downtrend and the first PSAR of the current uptrend.
             take_profit = LimitOrder(
                 totalQuantity=self.params.number_of_contracts,
                 action='SELL',
-                lmtPrice=10000000
+                lmtPrice=current_price
             )
-            
+
             order = BracketOrder(
                 parent=limit_order,
                 takeProfit=take_profit,
@@ -145,11 +197,10 @@ class IchimokuBase(Strategy):
                 stopPrice=self.params.psar_mes[-1]
             )
 
-            # TODO: Calculate take profit using Fibonacci retracement
             take_profit = LimitOrder(
                 totalQuantity=self.params.number_of_contracts,
                 action='BUY',
-                lmtPrice=10000000
+                lmtPrice=current_price
             )
 
             order = BracketOrder(
@@ -161,7 +212,7 @@ class IchimokuBase(Strategy):
         
         else:
             return None
-    
+
     def to_dict(self):
         return {
             'name': self.name,
@@ -292,6 +343,11 @@ class IchimokuBase(Strategy):
         """Calculate the highest high since the trend changed"""
         relevant_data = historical_data[-candles_since_change:]
         return max(day['high'] for day in relevant_data)
+    
+    def calculate_lowest_low_since_change(self, historical_data, candles_since_change):
+        """Calculate the lowest low since the trend changed"""
+        relevant_data = historical_data[-candles_since_change:]
+        return min(day['low'] for day in relevant_data)
 
     def get_trend_change_psars(self, psar_data, historical_data):
         """Get the last PSAR of previous downtrend and first PSAR of current uptrend"""
@@ -335,3 +391,6 @@ class IchimokuBase(Strategy):
                           current_date.isocalendar()[1] != prev_date.isocalendar()[1])  # Different week
         
         return is_weekly_candle, current_candle, prev_candle
+    
+    def calculate_number_of_contracts(self, take_profit, stop_loss):
+        return 12

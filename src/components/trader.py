@@ -111,6 +111,8 @@ class Trader:
             raise Exception(f"Strategy {strategy_name} not found")
         
         self.run_backtest(strategy_name)
+
+        self.close_all_positions()
         
         # TODO: Fix this so that historical data is saved in the contract object
         # TODO: Historical data must be updated once per timeframe used (must implement timeframe)
@@ -148,6 +150,7 @@ class Trader:
 
                 # TODO: Add exit logic
                 if self.decision == 'EXIT':
+                    
                     continue
 
                 # Create orders for the strategy
@@ -416,6 +419,21 @@ class Trader:
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
             raise Exception(f"Error placing order: {str(e)}")
+        
+    def close_all_positions(self):
+        logger.info("Closing all positions")
+        try:
+            async def _close_all_positions():
+                for order in self.ib.orders():
+                    self.ib.cancelOrder(order)
+                logger.success("Successfully closed all positions")
+                return True
+            
+            self._execute(_close_all_positions())
+            return True
+        except Exception as e:
+            logger.error(f"Error closing all positions: {str(e)}")
+            raise Exception(f"Error closing all positions: {str(e)}")
 
 class TraderSnapshot:
 
