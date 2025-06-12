@@ -9,7 +9,6 @@ from datetime import datetime
 import time
 import math
 import json
-from src.models.trader import db
 
 from src.components.strategy import IchimokuBase
 from src.lib.params import IchimokuBaseParams
@@ -29,7 +28,8 @@ class Trader:
         self.decision = None
         self.account_summary = None
 
-        self.db = db
+        self.host = os.getenv('IBKR_HOST', None)
+        self.port = int(os.getenv('IBKR_PORT', None))
 
         self.connect()
 
@@ -65,7 +65,7 @@ class Trader:
             async def _connect():
                 while True:
                     try:
-                        await self.ib.connectAsync('127.0.0.1', 4002, clientId=1)
+                        await self.ib.connectAsync(self.host, self.port, clientId=1)
                         if self.ib.isConnected():
                             return True
                     except Exception as e:
