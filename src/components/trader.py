@@ -9,9 +9,10 @@ from datetime import datetime
 import time
 import math
 import json
+import pandas as pd
 
 from src.components.strategy import IchimokuBase
-from src.lib.params import IchimokuBaseParams
+from src.lib.params import IchimokuBaseParams, ContractData
 
 SLEEP_TIME = 86400
 
@@ -27,6 +28,7 @@ class Trader:
         self.strategy = None
         self.decision = None
         self.account_summary = None
+        self.backtest = []  # Array to store backtest snapshots
 
         self.host = os.getenv('IBKR_HOST', None)
         self.port = int(os.getenv('IBKR_PORT', None))
@@ -60,7 +62,7 @@ class Trader:
         return future.result()
 
     def connect(self):
-        logger.info("Connecting to IBKR")
+        logger.announcement("Connecting to IBKR...", 'info')
         try:
             async def _connect():
                 while True:
@@ -75,7 +77,7 @@ class Trader:
             
             connected = self._execute(_connect())
             if connected:
-                logger.success("Connected to IBKR")
+                logger.announcement("Connected to IBKR.", 'success')
             return connected
         except Exception as e:
             logger.error(f"Error connecting to IB: {str(e)}")
@@ -95,7 +97,7 @@ class Trader:
                     self._thread = None
                     self._loop = None
                 
-                logger.success("Disconnected from IBKR")
+                logger.announcement("Disconnected from IBKR", 'success')
                 return True
             except Exception as e:
                 logger.error(f"Error disconnecting from IB: {str(e)}")
@@ -110,16 +112,18 @@ class Trader:
         else:
             raise Exception(f"Strategy {strategy_name} not found")
         
-        self.run_backtest(strategy_name)
+        # Populate initial strategy params with full historical data
+        logger.announcement("Populating initial strategy params...", 'info')
+        for contract_data in strategy.params.contracts:
+            historical_data = self.get_historical_data(contract_data.contract)
+            contract_data.data = historical_data
 
-        self.close_all_positions()
-        
-        # TODO: Fix this so that historical data is saved in the contract object
-        # TODO: Historical data must be updated once per timeframe used (must implement timeframe)
-        for contract in strategy.params.contracts:
-            strategy.params.historicalData[contract.symbol] = self.get_historical_data(contract)
+        # Run backtest first
+        self.run_backtest(strategy_name)
+        #self.close_all_positions()
 
         logger.announcement(f"Running strategy: {strategy.name}", 'info')
+        
         self.running = True
         
         try:
@@ -128,10 +132,13 @@ class Trader:
                 if not self.running:
                     exit()
 
+                logger.announcement("Populating strategy params...", 'info')
+                for contract_data in strategy.params.contracts:
+                    historical_data = self.get_historical_data(contract_data.contract)
+                    contract_data.data = historical_data
                 self.account_summary = self.get_account_summary()
-
-                strategy.params.openOrders = self.get_open_orders()
-                strategy.params.executedOrders = self.get_completed_orders()
+                strategy.params.open_orders = self.get_open_orders()
+                strategy.params.executed_orders = self.get_completed_orders()
                 strategy.params.positions = self.get_positions()
 
                 # Run strategy
@@ -140,31 +147,33 @@ class Trader:
                 logger.announcement(f"Decision: {self.decision}", 'success')
 
                 # Store decision in database
-                if self.decision:
-                    #db.create('decision', {'decision': self.decision})
-                    pass
 
-                if self.decision != 'BUY' and self.decision != 'SELL':
-                    time.sleep(SLEEP_TIME)
-                    continue
-
-                # TODO: Add exit logic
+                # Handle exit signals
                 if self.decision == 'EXIT':
-                    
+                    logger.warning("EXIT signal received - closing all positions")
+                    self.close_all_positions()
+                    # Clear MYM simulation data when exiting
+                    if hasattr(strategy, '_clear_mym_simulation'):
+                        strategy._clear_mym_simulation()
                     continue
 
-                # Create orders for the strategy
+                # Create orders for the strategy and place them
                 order = strategy.create_order(self.decision)
-
-                # Place orders in IBKRs
-                self.place_order(order)
+                if order:
+                    logger.info("Order created.")
+                    # Uncomment the line below when ready for live trading
+                    # self.place_order(order)
+                    logger.warning("Order placement is currently disabled for safety")
+                else:
+                    logger.info("No order to place for this decision")
 
                 # Update strategy params once more
-                strategy.params.openOrders = self.get_open_orders()
-                strategy.params.executedOrders = self.get_completed_orders()
+                logger.announcement("Refreshing strategy params...", 'info')
+                strategy.params.open_orders = self.get_open_orders()
+                strategy.params.executed_orders = self.get_completed_orders()
                 strategy.params.positions = self.get_positions()
                 
-                # Wait for 1 second before running the strategy again
+                # Wait before running the strategy again
                 time.sleep(SLEEP_TIME)
                 
         except Exception as e:
@@ -173,114 +182,216 @@ class Trader:
 
     def run_backtest(self, strategy_name: str):
         """
-        Run a backtest of the strategy using historical data.
-        
-        Args:
-            strategy_name (str): Name of the strategy to backtest
-            start_date (str, optional): Start date for backtest in 'YYYY-MM-DD' format
-            end_date (str, optional): End date for backtest in 'YYYY-MM-DD' format
-            
-        Returns:
-            pd.DataFrame: DataFrame containing backtest results
+        Run backtest using historical data from strategy params
         """
-        import pandas as pd
-        from datetime import datetime, timedelta
-        import numpy as np
+        logger.announcement(f"Starting backtest for strategy: {strategy_name}", 'info')
+        
+        if not self.strategy:
+            logger.error("No strategy loaded for backtesting")
+            return
+        
+        # Get the primary contract data (assuming MES is the main one)
+        primary_contract_data = None
+        for contract_data in self.strategy.params.contracts:
+            if contract_data.data and len(contract_data.data) > 0:
+                primary_contract_data = contract_data
+                break
+        
+        if not primary_contract_data or not primary_contract_data.data:
+            logger.error("No historical data available for backtesting")
+            return
+        
+        historical_data = primary_contract_data.data
+        logger.info(f"Running backtest on {len(historical_data)} data points")
+        
+        # Clear previous backtest results
+        self.backtest = []
+        
+        # We need at least enough data points for the strategy to calculate indicators
+        # For Ichimoku, we typically need at least 26 periods
+        min_periods = 26
+        
+        if len(historical_data) < min_periods:
+            logger.warning(f"Not enough historical data for backtesting. Need at least {min_periods} periods, got {len(historical_data)}")
+            return
+        
+        try:
+            # Iterate through historical data starting from min_periods
+            for i in range(min_periods, len(historical_data)):
+                current_date = historical_data[i]['date']
+                
+                # Create a subset of data up to current point for strategy calculation
+                subset_data = historical_data[:i+1]
+                
+                # Temporarily store original data and update with subset
+                original_data = {}
+                for contract_data in self.strategy.params.contracts:
+                    if contract_data.data:
+                        # Store original data
+                        original_data[id(contract_data)] = contract_data.data
+                        # Update with subset for strategy calculation
+                        contract_data.data = subset_data
+                
+                # Clear live trading data for clean backtest
+                self.strategy.params.open_orders = []
+                self.strategy.params.executed_orders = []
+                self.strategy.params.positions = []
+                
+                # Run strategy with current data subset
+                decision = self.strategy.run()
+                self.decision = decision
+                
+                # Create backtest snapshot
+                snapshot = BacktestSnapshot(self, current_date, historical_data[i])
+                self.backtest.append(snapshot)
+                
+                # Restore original data after strategy calculation
+                for contract_data in self.strategy.params.contracts:
+                    if id(contract_data) in original_data:
+                        contract_data.data = original_data[id(contract_data)]
+                
+                # Log progress every 50 data points
+                if i % 50 == 0:
+                    logger.info(f"Backtest progress: {i}/{len(historical_data)} ({(i/len(historical_data)*100):.1f}%)")
+            
+            logger.announcement(f"Backtest completed. Generated {len(self.backtest)} snapshots", 'success')
+                    
+        except Exception as e:
+            logger.error(f"Error during backtesting: {str(e)}")
+            raise Exception(f"Error during backtesting: {str(e)}")
+    
+    def get_backtest_summary(self):
+        """
+        Generate a summary of backtest results
+        """
+        if not self.backtest:
+            return {"error": "No backtest data available"}
+        
+        total_signals = len(self.backtest)
+        buy_signals = len([s for s in self.backtest if s.decision == 'BUY'])
+        sell_signals = len([s for s in self.backtest if s.decision == 'SELL'])
+        hold_signals = len([s for s in self.backtest if s.decision == 'HOLD'])
+        
+        return {
+            "total_periods": total_signals,
+            "buy_signals": buy_signals,
+            "sell_signals": sell_signals,
+            "hold_signals": hold_signals,
+            "buy_percentage": (buy_signals / total_signals * 100) if total_signals > 0 else 0,
+            "sell_percentage": (sell_signals / total_signals * 100) if total_signals > 0 else 0,
+            "hold_percentage": (hold_signals / total_signals * 100) if total_signals > 0 else 0,
+            "start_date": self.backtest[0].current_time if self.backtest else None,
+            "end_date": self.backtest[-1].current_time if self.backtest else None,
+        }
 
-        logger.announcement(f"Running backtest for {strategy_name}", 'info')
+    def export_backtest_results(self, filename=None):
+        """
+        Export backtest results to JSON file
+        """
+        if not self.backtest:
+            logger.warning("No backtest data to export")
+            return False
         
-        if strategy_name == 'ICHIMOKU_BASE':
-            strategy = IchimokuBase(IchimokuBaseParams())
-        else:
-            raise Exception(f"Strategy {strategy_name} not found")
+        if not filename:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"backtest_results_{timestamp}.json"
         
-        # Get historical data for all contracts
-        historical_data = {}
-        for contract in strategy.params.contracts:
-            historical_data[contract.symbol] = self.get_historical_data(contract)
-            
-        # Convert historical data to DataFrame
-        df = pd.DataFrame(historical_data[strategy.params.contracts[0].symbol])
-
-        # Convert date strings to datetime
-        df['date'] = pd.to_datetime(df['date'])
-        
-        # Initialize backtest results
-        results = []
-        position = 0
-        entry_price = 0
-        equity = 100  # Starting with 100 as base equity
-        cumulative_returns = 0
-        contracts = 12  # Default number of contracts
-        
-        # Run strategy on each historical data point
-        for i in range(len(df)):
-            current_data = df.iloc[:i+1]
-            
-            # Update strategy parameters with historical data
-            strategy.params.historicalData = {contract.symbol: current_data.to_dict('records') 
-                                           for contract in strategy.params.contracts}
-            strategy.params.position = position
-            strategy.params.openOrders = []
-            strategy.params.executedOrders = []
-            
-            # Run strategy
-            decision = strategy.run()
-            
-            # Calculate daily returns and equity
-            daily_return = 0
-            if position != 0:
-                daily_return = (df.iloc[i]['close'] - df.iloc[i-1]['close']) / df.iloc[i-1]['close'] * 100
-                cumulative_returns += daily_return
-                equity *= (1 + daily_return/100)
-            
-            # Record results with enhanced data
-            result = {
-                'date': df.iloc[i]['date'],
-                'open': df.iloc[i]['open'],
-                'high': df.iloc[i]['high'],
-                'low': df.iloc[i]['low'],
-                'close': df.iloc[i]['close'],
-                'volume': df.iloc[i]['volume'],
-                'decision': decision,
-                'position': position,
-                'daily_return': daily_return,
-                'cumulative_returns': cumulative_returns,
-                'equity': equity,
-                'entry_price': entry_price if position != 0 else None,
-                'contracts': contracts,
-                'tenkan': strategy.params.tenkan,
-                'kijun': strategy.params.kijun,
-                'psar_mes': strategy.params.psar_mes[-1] if strategy.params.psar_mes else None,
-                'psar_mym': strategy.params.psar_mym[-1] if strategy.params.psar_mym else None
+        try:
+            # Convert all snapshots to dict format
+            backtest_data = {
+                "summary": self.get_backtest_summary(),
+                "snapshots": [snapshot.to_dict() for snapshot in self.backtest]
             }
             
-            # Update position and entry price based on strategy decision
-            if decision == 'BUY':
-                position = 1
-                entry_price = df.iloc[i]['close']
-                contracts = strategy.params.number_of_contracts
-            elif decision == 'SELLSHORT':
-                position = -1
-                entry_price = df.iloc[i]['close']
-                contracts = strategy.params.number_of_contracts
-            elif decision == 'STAY':
-                # Keep current position and entry price
-                pass
-                
-            results.append(result)
+            # Create backtest directory if it doesn't exist
+            os.makedirs("backtest_results", exist_ok=True)
+            filepath = os.path.join("backtest_results", filename)
             
-        # Convert results to DataFrame
-        results_df = pd.DataFrame(results)
+            with open(filepath, 'w') as f:
+                json.dump(backtest_data, f, indent=2)
+            
+            logger.announcement(f"Backtest results exported to {filepath}", 'success')
+            return filepath
+            
+        except Exception as e:
+            logger.error(f"Error exporting backtest results: {str(e)}")
+            return False
+
+    def get_backtest_dataframe(self):
+        """
+        Convert backtest results to pandas DataFrame for analysis
+        """
+        if not self.backtest:
+            logger.warning("No backtest data available")
+            return None
         
-        # Save detailed results
-        results_df.to_csv('backtest_results.csv', index=False)
+        try:
+            data = []
+            for snapshot in self.backtest:
+                row = {
+                    'date': snapshot.current_time,
+                    'decision': snapshot.decision,
+                    'open': snapshot.market_data.get('open', 0) if snapshot.market_data else 0,
+                    'high': snapshot.market_data.get('high', 0) if snapshot.market_data else 0,
+                    'low': snapshot.market_data.get('low', 0) if snapshot.market_data else 0,
+                    'close': snapshot.market_data.get('close', 0) if snapshot.market_data else 0,
+                    'volume': snapshot.market_data.get('volume', 0) if snapshot.market_data else 0,
+                }
+                
+                # Add strategy indicators
+                if snapshot.strategy_indicators:
+                    row.update(snapshot.strategy_indicators)
+                
+                data.append(row)
+            
+            df = pd.DataFrame(data)
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error creating backtest DataFrame: {str(e)}")
+            return None
+
+    def get_backtest_results(self):
+        """
+        Get the backtest results array
+        """
+        return self.backtest
+    
+    def print_backtest_summary(self):
+        """
+        Print a formatted backtest summary to console
+        """
+        summary = self.get_backtest_summary()
+        if "error" in summary:
+            print(summary["error"])
+            return
         
-        logger.success(f"Backtest completed successfully")
-        return results_df
+        print("\n" + "="*50)
+        print("BACKTEST SUMMARY")
+        print("="*50)
+        print(f"Total Periods: {summary['total_periods']}")
+        print(f"Buy Signals: {summary['buy_signals']} ({summary['buy_percentage']:.1f}%)")
+        print(f"Sell Signals: {summary['sell_signals']} ({summary['sell_percentage']:.1f}%)")
+        print(f"Hold Signals: {summary['hold_signals']} ({summary['hold_percentage']:.1f}%)")
+        print(f"Date Range: {summary['start_date']} to {summary['end_date']}")
+        print("="*50)
+        
+        # Show recent signals
+        if self.backtest:
+            print("\nLast 5 Signals:")
+            for snapshot in self.backtest[-5:]:
+                print(f"  {snapshot.current_time}: {snapshot.decision}")
+        print()
+
+    def clear_backtest(self):
+        """
+        Clear backtest results
+        """
+        self.backtest = []
+        logger.info("Backtest results cleared")
 
     def get_historical_data(self, contract: Contract):
-        logger.info(f"Getting historical data")
+        logger.info(f"Getting historical data for {contract.symbol}...")
         try:
             async def _get_historical_data():
                 historical_data_response = self.ib.reqHistoricalData(contract, endDateTime='', durationStr='1 Y', barSizeSetting='1 day', whatToShow='TRADES', useRTH=1)
@@ -291,7 +402,7 @@ class Trader:
                 return historical_data
             
             historical_data = self._execute(_get_historical_data())
-            logger.success(f"Successfully got historical data")
+            logger.success(f"Successfully got historical data.")
             return historical_data
         except Exception as e:
             logger.error(f"Error getting historical data: {str(e)}")
@@ -309,7 +420,7 @@ class Trader:
                 return market_data_response.last
             
             latest_price = self._execute(_get_latest_price())
-            logger.success(f"Successfully got latest price")
+            logger.success(f"Successfully got latest price.")
             return latest_price
         except Exception as e:
             logger.error(f"Error getting latest price: {str(e)}")
@@ -330,9 +441,8 @@ class Trader:
                     account_summary_dict['modelCode'] = summary.modelCode
                     account_summary.append(account_summary_dict)
                 return account_summary
-            
             account_summary = self._execute(_get_account_summary())
-            logger.success(f"Successfully got account summary")
+            logger.success(f"Successfully got account summary.")
             return account_summary
         except Exception as e:
             logger.error(f"Error getting account summary: {str(e)}")
@@ -342,12 +452,25 @@ class Trader:
         logger.info("Getting positions")
         try:
             async def _get_positions():
-                positions = self.ib.positions()
-                logger.info(f"You have {len(positions)} positions overall")
+                positions_response = self.ib.positions()
+                positions = []
+                for position in positions_response:
+                    position_dict = {
+                        'account': position.account,
+                        'contract': {
+                            'symbol': position.contract.symbol,
+                            'secType': position.contract.secType,
+                            'exchange': position.contract.exchange,
+                            'currency': getattr(position.contract, 'currency', 'USD'),
+                        },
+                        'position': position.position,
+                        'avgCost': position.avgCost,
+                    }
+                    positions.append(position_dict)
+                logger.success(f"Successfully got {len(positions)} positions.")
                 return positions
             
             positions = self._execute(_get_positions())
-            logger.success(f"Successfully got positions: {positions}")
             return positions
         except Exception as e:
             logger.error(f"Error getting positions: {str(e)}")
@@ -361,18 +484,28 @@ class Trader:
                 orders = []
                 for order in orders_response:
                     orders.append({
-                        'contract': order.contract.dict(),
-                        'orderStatus': order.orderStatus.dict(),
+                        'contract': {
+                            'symbol': order.contract.symbol,
+                            'secType': order.contract.secType,
+                            'exchange': order.contract.exchange,
+                            'currency': getattr(order.contract, 'currency', 'USD'),
+                        },
+                        'orderStatus': {
+                            'orderId': order.orderStatus.orderId,
+                            'status': order.orderStatus.status,
+                            'filled': order.orderStatus.filled,
+                            'remaining': order.orderStatus.remaining,
+                            'avgFillPrice': order.orderStatus.avgFillPrice,
+                        },
                         'isActive': order.isActive(),
                         'isDone': order.isDone(),
                         'filled': order.filled(),
                         'remaining': order.remaining(),
                     })
-                logger.info(f"Successfully got {len(orders)} completed orders")
+                logger.success(f"Successfully got {len(orders)} completed orders.")
                 return orders
             
             completed_orders = self._execute(_get_completed_orders())
-            logger.success(f"Successfully got {len(completed_orders)} completed orders")
             return completed_orders
         except Exception as e:
             logger.error(f"Error getting completed orders: {str(e)}")
@@ -384,15 +517,34 @@ class Trader:
             async def _get_open_orders():
                 orders_response = self.ib.openOrders()
                 orders = []
-                for order in orders_response:
-                    order_dict = order.dict()
-                    order_dict['softDollarTier'] = order.softDollarTier.dict()
+                for trade in orders_response:
+                    order_dict = {
+                        'contract': {
+                            'symbol': trade.contract.symbol,
+                            'secType': trade.contract.secType,
+                            'exchange': trade.contract.exchange,
+                            'currency': getattr(trade.contract, 'currency', 'USD'),
+                        },
+                        'order': {
+                            'orderId': trade.order.orderId,
+                            'action': trade.order.action,
+                            'totalQuantity': trade.order.totalQuantity,
+                            'orderType': trade.order.orderType,
+                            'lmtPrice': getattr(trade.order, 'lmtPrice', 0),
+                            'auxPrice': getattr(trade.order, 'auxPrice', 0),
+                        },
+                        'orderStatus': {
+                            'status': trade.orderStatus.status,
+                            'filled': trade.orderStatus.filled,
+                            'remaining': trade.orderStatus.remaining,
+                            'avgFillPrice': trade.orderStatus.avgFillPrice,
+                        }
+                    }
                     orders.append(order_dict)
-                logger.info(f"Successfully got {len(orders)} open orders")
+                logger.success(f"Successfully got {len(orders)} open orders.")
                 return orders
             
             open_orders = self._execute(_get_open_orders())
-            logger.success(f"Successfully got {len(open_orders)} open orders")
             return open_orders
         except Exception as e:
             logger.error(f"Error getting open orders: {str(e)}")
@@ -403,8 +555,12 @@ class Trader:
         try:
             async def _place_order():
 
-                # TODO Fix this
-                contract = self.strategy.params.contracts[0]
+                # Get the first contract from strategy params
+                mes_data = self.strategy.params.get_mes_data()
+                if not mes_data:
+                    logger.error("No MES contract data found for order placement")
+                    return False
+                contract = mes_data.contract
                 self.ib.qualifyContracts(contract)
 
                 for o in order:
@@ -414,7 +570,6 @@ class Trader:
                 return True
             
             self._execute(_place_order())
-            logger.success(f"Successfully placed order")
             return True
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
@@ -435,19 +590,62 @@ class Trader:
             logger.error(f"Error closing all positions: {str(e)}")
             raise Exception(f"Error closing all positions: {str(e)}")
 
+class BacktestSnapshot:
+    def __init__(self, trader: Trader, current_date, market_data):
+        self.current_time = current_date
+        self.decision = trader.decision
+        self.market_data = market_data  # OHLCV data for this period
+        self.trader = trader  # Store trader reference
+        self.strategy_indicators = self.get_strategy_indicators(trader.strategy) if trader.strategy else {}
+        
+    def get_strategy_indicators(self, strategy):
+        """
+        Extract relevant indicators from the strategy for analysis
+        """
+        indicators = {}
+        
+        # If it's an Ichimoku strategy, get the indicator values from params
+        if hasattr(strategy, 'params'):
+            indicators = {
+                'tenkan': getattr(strategy.params, 'tenkan', None),
+                'kijun': getattr(strategy.params, 'kijun', None),
+                'psar_mes': getattr(strategy.params, 'psar_mes', [])[-1] if getattr(strategy.params, 'psar_mes', []) else None,
+                'psar_mym': getattr(strategy.params, 'psar_mym', [])[-1] if getattr(strategy.params, 'psar_mym', []) else None,
+                'number_of_contracts': getattr(strategy.params, 'number_of_contracts', None),
+                'psar_difference': getattr(strategy.params, 'psar_difference', None),
+            }
+        
+        return indicators
+
+    def to_dict(self):
+        return {
+            'current_time': self.current_time.strftime('%Y%m%d%H%M%S') if isinstance(self.current_time, datetime) else str(self.current_time),
+            'decision': self.decision,
+            'market_data': {
+                'open': self.market_data.get('open', 0),
+                'high': self.market_data.get('high', 0),
+                'low': self.market_data.get('low', 0),
+                'close': self.market_data.get('close', 0),
+                'volume': self.market_data.get('volume', 0),
+            } if self.market_data else {},
+            'strategy_indicators': self.strategy_indicators,
+        }
+
 class TraderSnapshot:
 
     def __init__(self, trader: Trader):
         logger.announcement("Creating Trader Snapshot", 'info')
+        self.current_time = datetime.now()
         self.strategy = trader.strategy
         self.decision = trader.decision
         self.account_summary = trader.account_summary
-        self.decision_history = json.loads(trader.db.read('decision').data.decode('utf-8'))
+        self.backtest = trader.backtest
 
     def to_dict(self):
         return {
-            'strategy': self.strategy.to_dict(),
+            'current_time': self.current_time.strftime('%Y%m%d%H%M%S'),
+            'strategy': self.strategy.to_dict() if self.strategy else {},
             'decision': self.decision,
             'account_summary': self.account_summary,
-            'decision_history': self.decision_history
+            'backtest': [snapshot.to_dict() for snapshot in self.backtest] if self.backtest else [],
         }

@@ -22,13 +22,11 @@ def create_app():
     
     return app, socket
 
-logger.announcement("Starting WebSocket server...", type='info')
+logger.announcement("Starting AGM Trader WebSocket server...", type='info')
+logger.announcement("AGM Trader WebSocket server started successfully.", type='success')
 app, socket = create_app()
-
 wsgi_server = pywsgi.WSGIServer(('0.0.0.0', os.getenv('PORT')), app, handler_class=WebSocketHandler)
 application = app
 
 if __name__ == '__main__':
     wsgi_server.serve_forever()
-
-logger.announcement("WebSocket server started successfully.", type='success')

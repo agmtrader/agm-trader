@@ -2,23 +2,20 @@ from flask import request
 from flask_socketio import emit
 from src.utils.logger import logger
 from src.components.trader import Trader, TraderSnapshot
-from src.utils.response import Response
 
-logger.announcement("Starting Trader", 'info')
 trader = Trader()
-logger.announcement("Trader initialized and connected to IBKR", 'success')
 
 def deploy_main_routes(socketio):
     @socketio.on('connect')
     def handle_connect():
-        logger.announcement("Client connecting", 'info')
+        logger.announcement("Client connecting...", 'info')
         try:
             if trader:
-                emit('connected', Response.success(TraderSnapshot(trader).to_dict()), broadcast=True)
-                logger.announcement("Client connected", 'success')
+                emit('connected', TraderSnapshot(trader).to_dict(), broadcast=True)
+                logger.announcement("Client connected.", 'success')
                 return
-            emit('connected', Response.success(None), broadcast=True)
-            logger.announcement("Client connected", 'success')
+            emit('connected', None, broadcast=True)
+            logger.announcement("Client connected.", 'success')
             return
         except Exception as e:
             logger.error(f"{str(e)}")
@@ -28,14 +25,14 @@ def deploy_main_routes(socketio):
     def handle_disconnect():
         client_id = request.sid
         logger.announcement(f"Client {client_id} disconnecting...", 'info')
-        emit('disconnected', Response.success(client_id), broadcast=True)
-        logger.announcement(f"Client {client_id} disconnected", 'success')
+        emit('disconnected', {'client_id': client_id}, broadcast=True)
+        logger.announcement(f"Client {client_id} disconnected.", 'success')
 
     @socketio.on('ping')
     def ping():
         try:
-            logger.announcement("Ping received", 'info')
-            emit('pong', Response.success(TraderSnapshot(trader).to_dict()), broadcast=True)
+            logger.announcement("Ping received.", 'info')
+            emit('pong', TraderSnapshot(trader).to_dict(), broadcast=True)
         except Exception as e:
             logger.error(f"Error pinging Trader: {str(e)}")
-            emit('pong', Response.error(str(e)), broadcast=True)
+            emit('pong', str(e), broadcast=True)
