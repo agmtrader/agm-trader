@@ -8,6 +8,9 @@
 cache/*
 src/db/*
 logs/*
+keys/
+droplet
+*.pub
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
