@@ -63,8 +63,6 @@ services:
     env_file:
       - .env
     image: agm-trader:latest
-    volumes:
-      - ./agm-trader:/app
     ports:
       - "8080:8080"
     depends_on:
