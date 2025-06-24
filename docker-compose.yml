@@ -45,7 +45,32 @@ services:
       SSH_USER_TUNNEL: ${SSH_USER_TUNNEL:-}
       SSH_RESTART: ${SSH_RESTART:-}
       SSH_VNC_PORT: ${SSH_VNC_PORT:-}
+    networks:
+      - agm-trader-network
     ports:
       - "4001:4003"
       - "4002:4004"
       - "5900:5900"
+
+  agm-trader:
+    container_name: agm-trader
+    restart: always
+    build:
+      context: .
+      tags:
+        - "agm-trader:latest"
+    env_file:
+      - .env
+    image: agm-trader:latest
+    volumes:
+      - ./agm-trader:/app
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ibkr-gateway
+    networks:
+      - agm-trader-network
+
+networks:
+  agm-trader-network:
+    driver: bridge
