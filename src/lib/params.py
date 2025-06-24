@@ -86,7 +86,7 @@ class IchimokuBaseParams(BaseStrategyParams):
         current_date = datetime.datetime.now()
         
         # For simplicity, use March 2025 contracts (you may want to implement auto-rolling logic)
-        contract_month = '202506'  # June 2025
+        contract_month = '202507'  # July 2025
         
         mes_contract = Future('MES', contract_month, 'CME')
         mym_contract = Future('MYM', contract_month, 'CBOT')
