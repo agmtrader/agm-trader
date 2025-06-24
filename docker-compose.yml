@@ -57,6 +57,7 @@ services:
     restart: always
     build:
       context: .
+      dockerfile: Dockerfile
       tags:
         - "agm-trader:latest"
     env_file:
