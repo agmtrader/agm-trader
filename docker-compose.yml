@@ -70,6 +70,23 @@ services:
     networks:
       - agm-trader-network
 
+  frontend:
+    container_name: frontend
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      tags:
+        - "frontend:latest"
+    env_file:
+      - .env
+    image: frontend:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - agm-trader
+    networks:
+      - agm-trader-network
+
 networks:
   agm-trader-network:
     driver: bridge
