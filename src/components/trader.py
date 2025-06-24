@@ -161,7 +161,7 @@ class Trader:
                 order = strategy.create_order(self.decision)
                 if order:
                     logger.info("Order created.")
-                    # Uncomment the line below when ready for live trading
+                    # TODO: Uncomment the line below when ready for live trading
                     # self.place_order(order)
                     logger.warning("Order placement is currently disabled for safety")
                 else:
