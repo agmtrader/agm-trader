@@ -64,7 +64,7 @@ services:
       - .env
     image: agm-trader:latest
     ports:
-      - "8080:8080"
+      - "3333:3333"
     depends_on:
       - ibkr-gateway
     networks:

@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /
+
+Sitemap: https://agm-hub.vercel.app/sitemap.xml
