@@ -14,7 +14,9 @@ import pandas as pd
 from src.components.strategy import IchimokuBase
 from src.lib.params import IchimokuBaseParams, ContractData
 
-SLEEP_TIME = 60
+SLEEP_TIME = 86400
+CONNECTION_CHECK_INTERVAL = 30  # Check connection every 30 seconds
+MAX_RECONNECT_ATTEMPTS = 5
 
 class Trader:
 
@@ -29,6 +31,10 @@ class Trader:
         self.decision = None
         self.account_summary = None
         self.backtest = []  # Array to store backtest snapshots
+        self.last_connection_check = time.time()
+        self.reconnect_attempts = 0
+        self.connection_monitor_thread = None
+        self.connection_monitor_running = False
 
         self.host = os.getenv('IBKR_HOST', None)
         self.port = int(os.getenv('IBKR_PORT', None))
@@ -36,6 +42,8 @@ class Trader:
         self.connect()
 
         try:
+            # Start connection monitoring thread
+            self.start_connection_monitor()
 
             self.trading_thread = threading.Thread(target=self.run_strategy, args=('ICHIMOKU_BASE',))
             self.trading_thread.start()
@@ -61,30 +69,133 @@ class Trader:
         future = asyncio.run_coroutine_threadsafe(func, self._loop)
         return future.result()
 
+    def is_connected(self):
+        """Check if we're currently connected to IBKR"""
+        try:
+            return self.ib.isConnected()
+        except Exception as e:
+            logger.error(f"Error checking connection status: {str(e)}")
+            return False
+
+    def start_connection_monitor(self):
+        """Start the connection monitoring thread"""
+        if not self.connection_monitor_running:
+            self.connection_monitor_running = True
+            self.connection_monitor_thread = threading.Thread(target=self._connection_monitor_worker, daemon=True)
+            self.connection_monitor_thread.start()
+            logger.announcement("Connection monitor thread started", 'info')
+
+    def stop_connection_monitor(self):
+        """Stop the connection monitoring thread"""
+        self.connection_monitor_running = False
+        if self.connection_monitor_thread and self.connection_monitor_thread.is_alive():
+            self.connection_monitor_thread.join(timeout=5)
+            logger.info("Connection monitor thread stopped")
+
+    def _connection_monitor_worker(self):
+        """Background worker that continuously monitors the connection"""
+        logger.info("Connection monitor worker started")
+        
+        while self.connection_monitor_running:
+            logger.info("Checking IBKR connection...")
+            try:
+                # Check connection status
+                if not self.is_connected():
+                    logger.warning("Connection monitor detected lost connection. Attempting to reconnect...")
+                    self.reconnect()
+                else:
+                    # Reset reconnect attempts counter on successful connection check
+                    if self.reconnect_attempts > 0:
+                        logger.info("Connection monitor confirmed connection is restored")
+                        self.reconnect_attempts = 0
+                
+                # Update last connection check time
+                self.last_connection_check = time.time()
+                
+            except Exception as e:
+                logger.error(f"Error in connection monitor: {str(e)}")
+            
+            # Sleep for the check interval
+            logger.success(f"Successfully connected to IBKR")
+            time.sleep(CONNECTION_CHECK_INTERVAL)
+        
+        logger.info("Connection monitor worker stopped")
+
+    def reconnect(self):
+        """Attempt to reconnect to IBKR with retry logic"""
+        self.reconnect_attempts += 1
+        
+        if self.reconnect_attempts > MAX_RECONNECT_ATTEMPTS:
+            logger.error(f"Maximum reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) exceeded. Manual intervention required.")
+            self.running = False
+            return False
+            
+        logger.info(f"Reconnection attempt {self.reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS}")
+        
+        try:
+            # First try to disconnect cleanly if still connected
+            if self.ib.isConnected():
+                try:
+                    async def _disconnect():
+                        self.ib.disconnect()
+                    self._execute(_disconnect())
+                except Exception as e:
+                    logger.warning(f"Error during disconnect: {str(e)}")
+            
+            # Wait a bit before reconnecting
+            time.sleep(2)
+            
+            # Attempt to reconnect
+            if self.connect():
+                logger.announcement(f"Successfully reconnected to IBKR on attempt {self.reconnect_attempts}", 'success')
+                self.reconnect_attempts = 0
+                return True
+            else:
+                logger.error(f"Reconnection attempt {self.reconnect_attempts} failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error during reconnection attempt {self.reconnect_attempts}: {str(e)}")
+            return False
+
     def connect(self):
         logger.announcement("Connecting to IBKR...", 'info')
         try:
             async def _connect():
-                while True:
+                max_attempts = 3
+                attempt = 0
+                
+                while attempt < max_attempts:
                     try:
                         await self.ib.connectAsync(self.host, self.port, clientId=1)
                         if self.ib.isConnected():
                             return True
                     except Exception as e:
-                        logger.error(f"Error connecting to IB: {str(e)}")
-                    logger.info("Waiting for connection...")
-                    time.sleep(5)
+                        logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
+                        attempt += 1
+                        if attempt < max_attempts:
+                            logger.info("Waiting before retry...")
+                            time.sleep(5)
+                
+                return False
             
             connected = self._execute(_connect())
             if connected:
                 logger.announcement("Connected to IBKR.", 'success')
+                self.reconnect_attempts = 0  # Reset counter on successful connection
+            else:
+                logger.error("Failed to connect to IBKR after multiple attempts")
             return connected
         except Exception as e:
             logger.error(f"Error connecting to IB: {str(e)}")
-            raise Exception(f"Error connecting to IB: {str(e)}")
-        
+            return False
+
     def disconnect(self):
         logger.info("Disconnecting from IBKR")
+        
+        # Stop the connection monitor first
+        self.stop_connection_monitor()
+        
         if self.ib.isConnected():
             try:
                 async def _disconnect():
@@ -103,7 +214,8 @@ class Trader:
                 logger.error(f"Error disconnecting from IB: {str(e)}")
                 return False
         return False
-    
+
+    # Strategy
     def run_strategy(self, strategy_name: str):
 
         if strategy_name == 'ICHIMOKU_BASE':
@@ -130,12 +242,22 @@ class Trader:
             while True:
 
                 if not self.running:
+                    # Stop connection monitor when exiting
+                    self.stop_connection_monitor()
                     exit()
 
+                # Simple connection check - the dedicated monitor thread handles reconnection
+                if not self.is_connected():
+                    logger.warning("Connection not available for trading. Monitor thread should be handling reconnection...")
+                    time.sleep(SLEEP_TIME)
+                    continue
+
                 logger.announcement("Populating strategy params...", 'info')
+
                 for contract_data in strategy.params.contracts:
                     historical_data = self.get_historical_data(contract_data.contract)
                     contract_data.data = historical_data
+                    
                 self.account_summary = self.get_account_summary()
                 strategy.params.open_orders = self.get_open_orders()
                 strategy.params.executed_orders = self.get_completed_orders()
@@ -151,7 +273,9 @@ class Trader:
                 # Handle exit signals
                 if self.decision == 'EXIT':
                     logger.warning("EXIT signal received - closing all positions")
-                    self.close_all_positions()
+                    # Check connection before closing positions
+                    if self.is_connected() or self.reconnect():
+                        self.close_all_positions()
                     # Clear MYM simulation data when exiting
                     if hasattr(strategy, '_clear_mym_simulation'):
                         strategy._clear_mym_simulation()
@@ -161,29 +285,43 @@ class Trader:
                 order = strategy.create_order(self.decision)
                 if order:
                     logger.info("Order created.")
-                    # TODO: Uncomment the line below when ready for live trading
-                    # self.place_order(order)
-                    logger.warning("Order placement is currently disabled for safety")
+                    # Check connection before placing order
+                    if self.is_connected():
+                        # TODO: Uncomment the line below when ready for live trading
+                        # self.place_order(order)
+                        logger.warning("Order placement is currently disabled for safety")
+                    else:
+                        logger.error("Cannot place order - no connection to IBKR")
                 else:
                     logger.info("No order to place for this decision")
 
                 # Update strategy params once more
                 logger.announcement("Refreshing strategy params...", 'info')
-                strategy.params.open_orders = self.get_open_orders()
-                strategy.params.executed_orders = self.get_completed_orders()
-                strategy.params.positions = self.get_positions()
+                
+                # Ensure connection before final API calls
+                if self.is_connected():
+                    strategy.params.open_orders = self.get_open_orders()
+                    strategy.params.executed_orders = self.get_completed_orders()
+                    strategy.params.positions = self.get_positions()
+                else:
+                    logger.warning("Skipping final parameter refresh due to connection issues")
                 
                 # Wait before running the strategy again
                 time.sleep(SLEEP_TIME)
                 
         except Exception as e:
             logger.error(f"Error running strategy: {str(e)}")
+            # Stop connection monitor on error
+            self.stop_connection_monitor()
             raise Exception(f"Error running strategy: {str(e)}")
 
     def run_backtest(self, strategy_name: str):
         """
         Run backtest using historical data from strategy params
         """
+
+        rolling = True
+        
         logger.announcement(f"Starting backtest for strategy: {strategy_name}", 'info')
         
         if not self.strategy:
@@ -259,139 +397,17 @@ class Trader:
         except Exception as e:
             logger.error(f"Error during backtesting: {str(e)}")
             raise Exception(f"Error during backtesting: {str(e)}")
-    
-    def get_backtest_summary(self):
-        """
-        Generate a summary of backtest results
-        """
-        if not self.backtest:
-            return {"error": "No backtest data available"}
-        
-        total_signals = len(self.backtest)
-        buy_signals = len([s for s in self.backtest if s.decision == 'BUY'])
-        sell_signals = len([s for s in self.backtest if s.decision == 'SELL'])
-        hold_signals = len([s for s in self.backtest if s.decision == 'HOLD'])
-        
-        return {
-            "total_periods": total_signals,
-            "buy_signals": buy_signals,
-            "sell_signals": sell_signals,
-            "hold_signals": hold_signals,
-            "buy_percentage": (buy_signals / total_signals * 100) if total_signals > 0 else 0,
-            "sell_percentage": (sell_signals / total_signals * 100) if total_signals > 0 else 0,
-            "hold_percentage": (hold_signals / total_signals * 100) if total_signals > 0 else 0,
-            "start_date": self.backtest[0].current_time if self.backtest else None,
-            "end_date": self.backtest[-1].current_time if self.backtest else None,
-        }
 
-    def export_backtest_results(self, filename=None):
-        """
-        Export backtest results to JSON file
-        """
-        if not self.backtest:
-            logger.warning("No backtest data to export")
-            return False
-        
-        if not filename:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"backtest_results_{timestamp}.json"
-        
-        try:
-            # Convert all snapshots to dict format
-            backtest_data = {
-                "summary": self.get_backtest_summary(),
-                "snapshots": [snapshot.to_dict() for snapshot in self.backtest]
-            }
-            
-            # Create backtest directory if it doesn't exist
-            os.makedirs("backtest_results", exist_ok=True)
-            filepath = os.path.join("backtest_results", filename)
-            
-            with open(filepath, 'w') as f:
-                json.dump(backtest_data, f, indent=2)
-            
-            logger.announcement(f"Backtest results exported to {filepath}", 'success')
-            return filepath
-            
-        except Exception as e:
-            logger.error(f"Error exporting backtest results: {str(e)}")
-            return False
-
-    def get_backtest_dataframe(self):
-        """
-        Convert backtest results to pandas DataFrame for analysis
-        """
-        if not self.backtest:
-            logger.warning("No backtest data available")
-            return None
-        
-        try:
-            data = []
-            for snapshot in self.backtest:
-                row = {
-                    'date': snapshot.current_time,
-                    'decision': snapshot.decision,
-                    'open': snapshot.market_data.get('open', 0) if snapshot.market_data else 0,
-                    'high': snapshot.market_data.get('high', 0) if snapshot.market_data else 0,
-                    'low': snapshot.market_data.get('low', 0) if snapshot.market_data else 0,
-                    'close': snapshot.market_data.get('close', 0) if snapshot.market_data else 0,
-                    'volume': snapshot.market_data.get('volume', 0) if snapshot.market_data else 0,
-                }
-                
-                # Add strategy indicators
-                if snapshot.strategy_indicators:
-                    row.update(snapshot.strategy_indicators)
-                
-                data.append(row)
-            
-            df = pd.DataFrame(data)
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error creating backtest DataFrame: {str(e)}")
-            return None
-
-    def get_backtest_results(self):
-        """
-        Get the backtest results array
-        """
-        return self.backtest
-    
-    def print_backtest_summary(self):
-        """
-        Print a formatted backtest summary to console
-        """
-        summary = self.get_backtest_summary()
-        if "error" in summary:
-            print(summary["error"])
-            return
-        
-        print("\n" + "="*50)
-        print("BACKTEST SUMMARY")
-        print("="*50)
-        print(f"Total Periods: {summary['total_periods']}")
-        print(f"Buy Signals: {summary['buy_signals']} ({summary['buy_percentage']:.1f}%)")
-        print(f"Sell Signals: {summary['sell_signals']} ({summary['sell_percentage']:.1f}%)")
-        print(f"Hold Signals: {summary['hold_signals']} ({summary['hold_percentage']:.1f}%)")
-        print(f"Date Range: {summary['start_date']} to {summary['end_date']}")
-        print("="*50)
-        
-        # Show recent signals
-        if self.backtest:
-            print("\nLast 5 Signals:")
-            for snapshot in self.backtest[-5:]:
-                print(f"  {snapshot.current_time}: {snapshot.decision}")
-        print()
-
-    def clear_backtest(self):
-        """
-        Clear backtest results
-        """
-        self.backtest = []
-        logger.info("Backtest results cleared")
-
+    # IBKR
     def get_historical_data(self, contract: Contract):
         logger.info(f"Getting historical data for {contract.symbol}...")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting historical data. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get historical data - no connection to IBKR")
+        
         try:
             async def _get_historical_data():
                 historical_data_response = self.ib.reqHistoricalData(contract, endDateTime='', durationStr='1 Y', barSizeSetting='1 day', whatToShow='TRADES', useRTH=1)
@@ -406,10 +422,25 @@ class Trader:
             return historical_data
         except Exception as e:
             logger.error(f"Error getting historical data: {str(e)}")
+            # Try to reconnect and retry once
+            if self.reconnect():
+                try:
+                    historical_data = self._execute(_get_historical_data())
+                    logger.success(f"Successfully got historical data after reconnection.")
+                    return historical_data
+                except Exception as retry_e:
+                    logger.error(f"Error getting historical data after reconnection: {str(retry_e)}")
             raise Exception(f"Error getting historical data: {str(e)}")
 
     def get_latest_price(self, contract: Contract):
         logger.info(f"Getting latest price")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting latest price. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get latest price - no connection to IBKR")
+        
         try:
             async def _get_latest_price():
                 self.ib.reqMarketDataType(3)
@@ -428,6 +459,13 @@ class Trader:
 
     def get_account_summary(self):
         logger.info("Getting account summary")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting account summary. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get account summary - no connection to IBKR")
+        
         try:
             async def _get_account_summary():
                 account_summary_response = self.ib.accountSummary()
@@ -450,6 +488,13 @@ class Trader:
 
     def get_positions(self):
         logger.info("Getting positions")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting positions. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get positions - no connection to IBKR")
+        
         try:
             async def _get_positions():
                 positions_response = self.ib.positions()
@@ -478,6 +523,13 @@ class Trader:
 
     def get_completed_orders(self):
         logger.info("Getting completed orders")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting completed orders. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get completed orders - no connection to IBKR")
+        
         try:
             async def _get_completed_orders():
                 orders_response = self.ib.reqCompletedOrders(False)
@@ -513,6 +565,13 @@ class Trader:
 
     def get_open_orders(self):
         logger.info("Getting open orders")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when getting open orders. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot get open orders - no connection to IBKR")
+        
         try:
             async def _get_open_orders():
                 orders_response = self.ib.openOrders()
@@ -552,6 +611,13 @@ class Trader:
 
     def place_order(self, order: Order):
         logger.info(f"Placing order: {order}")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when placing order. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot place order - no connection to IBKR")
+        
         try:
             async def _place_order():
 
@@ -577,6 +643,13 @@ class Trader:
         
     def close_all_positions(self):
         logger.info("Closing all positions")
+        
+        # Check connection before making API call
+        if not self.is_connected():
+            logger.warning("No connection when closing positions. Attempting reconnection...")
+            if not self.reconnect():
+                raise Exception("Cannot close positions - no connection to IBKR")
+        
         try:
             async def _close_all_positions():
                 for order in self.ib.orders():
