@@ -36,3 +36,13 @@ def deploy_main_routes(socketio):
         except Exception as e:
             logger.error(f"Error pinging Trader: {str(e)}")
             emit('pong', str(e), broadcast=True)
+
+    @socketio.on('backtest')
+    def backtest():
+        try:
+            logger.announcement("Backtest data requested.", 'info')
+            backtest_data = [snapshot.to_dict() for snapshot in trader.backtest] if trader.backtest else []
+            emit('backtest_data', backtest_data, broadcast=True)
+        except Exception as e:
+            logger.error(f"Error getting backtest data: {str(e)}")
+            emit('backtest_data', str(e), broadcast=True)

@@ -712,7 +712,6 @@ class TraderSnapshot:
         self.strategy = trader.strategy
         self.decision = trader.decision
         self.account_summary = trader.account_summary
-        self.backtest = trader.backtest
 
     def to_dict(self):
         return {
@@ -720,5 +719,4 @@ class TraderSnapshot:
             'strategy': self.strategy.to_dict() if self.strategy else {},
             'decision': self.decision,
             'account_summary': self.account_summary,
-            'backtest': [snapshot.to_dict() for snapshot in self.backtest] if self.backtest else [],
         }
