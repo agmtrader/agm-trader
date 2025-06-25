@@ -52,17 +52,17 @@ services:
       - "4002:4004"
       - "5900:5900"
 
-  agm-trader:
-    container_name: agm-trader
+  trader-socket:
+    container_name: trader-socket
     restart: always
     build:
       context: .
       dockerfile: Dockerfile
       tags:
-        - "agm-trader:latest"
+        - "trader-socket:latest"
     env_file:
       - .env
-    image: agm-trader:latest
+    image: trader-socket:latest
     ports:
       - "3333:3333"
     depends_on:
