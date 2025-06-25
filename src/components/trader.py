@@ -14,7 +14,7 @@ import pandas as pd
 from src.components.strategy import IchimokuBase
 from src.lib.params import IchimokuBaseParams, ContractData
 
-SLEEP_TIME = 86400
+SLEEP_TIME = 60
 
 class Trader:
 
