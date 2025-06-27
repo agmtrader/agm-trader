@@ -318,9 +318,8 @@ class Trader:
     def run_backtest(self, strategy_name: str):
         """
         Run backtest using historical data from strategy params
+        Returns array with columns: Date, Open, High, Low, Close, Prev Close, Decision, EntryPrice, ExitPrice, P/L, Cum. P/L
         """
-
-        rolling = True
         
         logger.announcement(f"Starting backtest for strategy: {strategy_name}", 'info')
         
@@ -353,10 +352,23 @@ class Trader:
             logger.warning(f"Not enough historical data for backtesting. Need at least {min_periods} periods, got {len(historical_data)}")
             return
         
+        # Backtest simulation variables
+        position = None  # None, 'LONG', or 'SHORT'
+        entry_price = 0.0
+        quantity = 0
+        tp1_price = 0.0
+        tp2_price = 0.0
+        sl_price = 0.0
+        tp1_qty = 0
+        tp2_qty = 0
+        cumulative_pnl = 0.0
+        
         try:
             # Iterate through historical data starting from min_periods
             for i in range(min_periods, len(historical_data)):
-                current_date = historical_data[i]['date']
+                current_candle = historical_data[i]
+                prev_candle = historical_data[i-1] if i > 0 else current_candle
+                current_date = current_candle['date']
                 
                 # Create a subset of data up to current point for strategy calculation
                 subset_data = historical_data[:i+1]
@@ -379,24 +391,220 @@ class Trader:
                 decision = self.strategy.run()
                 self.decision = decision
                 
-                # Create backtest snapshot
-                snapshot = BacktestSnapshot(self, current_date, historical_data[i])
-                self.backtest.append(snapshot)
+                # Initialize backtest row
+                backtest_row = {
+                    'Date': current_date,
+                    'Open': current_candle['open'],
+                    'High': current_candle['high'],
+                    'Low': current_candle['low'],
+                    'Close': current_candle['close'],
+                    'Prev Close': prev_candle['close'],
+                    'Decision': decision,
+                    'EntryPrice': '',
+                    'ExitPrice': '',
+                    'P/L': 0.0,
+                    'Cum. P/L': cumulative_pnl
+                }
+                
+                # Check for exits first (stop loss, take profit, or strategy exit)
+                if position:
+                    exit_price = None
+                    exit_reason = ''
+                    
+                    # Check stop loss and take profit levels
+                    if position == 'LONG':
+                        # For daily data, use close price to determine exits
+                        # Check stop loss (close price goes below SL)
+                        if current_candle['close'] <= sl_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'SL'
+                        # Check TP1 first (smaller target, more likely to hit first)
+                        elif tp1_qty > 0 and current_candle['close'] >= tp1_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'TP1'
+                        # Check TP2 only if TP1 was already hit (tp1_qty should be 0)
+                        elif tp2_qty > 0 and tp1_qty == 0 and current_candle['close'] >= tp2_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'TP2'
+                    
+                    elif position == 'SHORT':
+                        # For daily data, use close price to determine exits
+                        # Check stop loss (close price goes above SL)
+                        if current_candle['close'] >= sl_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'SL'
+                        # Check TP1 first (smaller target, more likely to hit first)
+                        elif tp1_qty > 0 and current_candle['close'] <= tp1_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'TP1'
+                        # Check TP2 only if TP1 was already hit (tp1_qty should be 0)
+                        elif tp2_qty > 0 and tp1_qty == 0 and current_candle['close'] <= tp2_price:
+                            exit_price = current_candle['close']  # Use actual close price
+                            exit_reason = 'TP2'
+                    
+                    # Check strategy exit signal
+                    if decision == 'EXIT':
+                        exit_price = current_candle['close']
+                        exit_reason = 'EXIT_SIGNAL'
+                        quantity = 0  # Close full position
+                    
+                    # Process exit if one occurred
+                    if exit_price:
+                        backtest_row['ExitPrice'] = exit_price
+                        
+                        # Calculate P/L based on the quantity being closed
+                        if exit_reason == 'TP1':
+                            exit_qty = tp1_qty
+                        elif exit_reason == 'TP2':
+                            exit_qty = tp2_qty
+                        else:
+                            # SL or EXIT_SIGNAL - close full remaining position
+                            exit_qty = quantity
+                        
+                        # Validate exit_price is not infinity or NaN
+                        if not (exit_price and exit_price != float('inf') and exit_price != float('-inf') and not math.isnan(exit_price)):
+                            logger.error(f"Invalid exit price: {exit_price}, using current close price instead")
+                            exit_price = current_candle['close']
+                            backtest_row['ExitPrice'] = exit_price
+                        
+                        # Calculate P/L
+                        if position == 'LONG':
+                            pnl = (exit_price - entry_price) * exit_qty
+                        else:  # SHORT
+                            pnl = (entry_price - exit_price) * exit_qty
+                        
+                        # Validate P/L is not infinity or NaN
+                        if math.isnan(pnl) or pnl == float('inf') or pnl == float('-inf'):
+                            logger.error(f"Invalid P/L calculated: {pnl}, setting to 0")
+                            pnl = 0.0
+                        
+                        backtest_row['P/L'] = pnl
+                        cumulative_pnl += pnl
+                        
+                        # Validate cumulative P/L
+                        if math.isnan(cumulative_pnl) or cumulative_pnl == float('inf') or cumulative_pnl == float('-inf'):
+                            logger.error(f"Invalid cumulative P/L: {cumulative_pnl}, resetting to current P/L")
+                            cumulative_pnl = pnl
+                        
+                        backtest_row['Cum. P/L'] = cumulative_pnl
+                        backtest_row['Decision'] = f"{decision}_{exit_reason}" if decision not in ['EXIT'] else exit_reason
+                        
+                        # Update position tracking
+                        if exit_reason == 'TP1':
+                            # Only reduce TP1 quantity, TP2 remains
+                            tp1_qty = 0
+                            # Remaining quantity is now just TP2
+                            quantity = tp2_qty
+                        elif exit_reason == 'TP2':
+                            # Close TP2 quantity, only TP1 might remain
+                            tp2_qty = 0
+                            # If TP1 was already closed, close the position
+                            if tp1_qty == 0:
+                                quantity = 0
+                        else:
+                            # Close full position for SL or EXIT
+                            quantity = 0
+                            tp1_qty = 0
+                            tp2_qty = 0
+                        
+                        # Close position completely if no quantity remains
+                        if quantity <= 0 and tp1_qty <= 0 and tp2_qty <= 0:
+                            position = None
+                            entry_price = 0.0
+                            quantity = 0
+                            tp1_price = 0.0
+                            tp2_price = 0.0
+                            sl_price = 0.0
+                            tp1_qty = 0
+                            tp2_qty = 0
+                
+                # Check for new entries (only if no position)
+                if not position and decision in ['LONG', 'SHORT']:
+                    # Use the strategy's create_order method to get proper order details
+                    orders = self.strategy.create_order(decision)
+                    
+                    if orders and len(orders) > 0:
+                        # Extract order details from the strategy's orders
+                        parent_order = orders[0]  # First order is the entry
+                        entry_price = parent_order.lmtPrice
+                        quantity = parent_order.totalQuantity
+                        
+                        # Initialize defaults
+                        sl_price = entry_price  # Default fallback
+                        tp1_price = entry_price * 1.01 if decision == 'LONG' else entry_price * 0.99  # Default fallback
+                        tp2_price = entry_price * 1.02 if decision == 'LONG' else entry_price * 0.98  # Default fallback
+                        tp1_qty = 0
+                        tp2_qty = 0
+                        
+                        # Parse child orders based on known structure: [Parent, StopLoss, TP1, TP2]
+                        if len(orders) >= 4:
+                            # Order 1: Stop Loss (StopOrder)
+                            stop_order = orders[1]
+                            if hasattr(stop_order, 'stopPrice'):
+                                sl_price = stop_order.stopPrice
+                                #logger.info(f"Found SL order at {sl_price:.2f}")
+                            
+                            # Order 2: TP1 (LimitOrder)
+                            tp1_order = orders[2]
+                            if hasattr(tp1_order, 'lmtPrice'):
+                                tp1_price = tp1_order.lmtPrice
+                                tp1_qty = tp1_order.totalQuantity
+                                #logger.info(f"Found TP1 order at {tp1_price:.2f} for {tp1_qty} contracts")
+                            
+                            # Order 3: TP2 (LimitOrder)
+                            tp2_order = orders[3]
+                            if hasattr(tp2_order, 'lmtPrice'):
+                                tp2_price = tp2_order.lmtPrice
+                                tp2_qty = tp2_order.totalQuantity
+                                #logger.info(f"Found TP2 order at {tp2_price:.2f} for {tp2_qty} contracts")
+                        else:
+                            logger.warning(f"Expected 4 orders but got {len(orders)}, using defaults")
+                        
+                        # Validate prices are reasonable
+                        if not (0 < entry_price < 50000):
+                            logger.error(f"Invalid entry price {entry_price}, using current close {current_candle['close']}")
+                            entry_price = current_candle['close']
+                        
+                        if not (0 < sl_price < 50000):
+                            logger.error(f"Invalid SL price {sl_price}, using entry price {entry_price}")
+                            sl_price = entry_price
+                        
+                        if not (0 < tp1_price < 50000):
+                            logger.error(f"Invalid TP1 price {tp1_price}, using default calculation")
+                            tp1_price = entry_price * 1.01 if decision == 'LONG' else entry_price * 0.99
+                        
+                        if not (0 < tp2_price < 50000):
+                            logger.error(f"Invalid TP2 price {tp2_price}, using default calculation")
+                            tp2_price = entry_price * 1.02 if decision == 'LONG' else entry_price * 0.98
+                        
+                        # Set position
+                        position = decision
+                        backtest_row['EntryPrice'] = entry_price
+                        
+                        #logger.info(f"{decision} entry at {entry_price:.2f}, TP1: {tp1_price:.2f} ({tp1_qty}), TP2: {tp2_price:.2f} ({tp2_qty}), SL: {sl_price:.2f}")
+                    else:
+                        logger.warning(f"Strategy returned {decision} but no orders were created")
+                
+                # Update cumulative P/L in row
+                backtest_row['Cum. P/L'] = cumulative_pnl
+                
+                # Add row to backtest results as BacktestSnapshot object
+                self.backtest.append(BacktestSnapshot(backtest_row))
                 
                 # Restore original data after strategy calculation
                 for contract_data in self.strategy.params.contracts:
                     if id(contract_data) in original_data:
                         contract_data.data = original_data[id(contract_data)]
+
+            self.export_backtest_to_csv()
                 
-                # Log progress every 50 data points
-                if i % 50 == 0:
-                    logger.info(f"Backtest progress: {i}/{len(historical_data)} ({(i/len(historical_data)*100):.1f}%)")
-            
-            logger.announcement(f"Backtest completed. Generated {len(self.backtest)} snapshots", 'success')
+            logger.announcement(f"Backtest completed. Generated {len(self.backtest)} rows, Final P/L: {cumulative_pnl:.2f}", 'success')
                     
         except Exception as e:
             logger.error(f"Error during backtesting: {str(e)}")
             raise Exception(f"Error during backtesting: {str(e)}")
+        
+        return self.backtest
 
     # IBKR
     def get_historical_data(self, contract: Contract):
@@ -663,46 +871,116 @@ class Trader:
             logger.error(f"Error closing all positions: {str(e)}")
             raise Exception(f"Error closing all positions: {str(e)}")
 
+    def export_backtest_to_csv(self, filename=None):
+        """
+        Export backtest results to CSV file
+        
+        Args:
+            filename (str, optional): Custom filename for the CSV. If None, uses timestamp-based name.
+        
+        Returns:
+            str: Path to the exported CSV file
+        """
+        if not self.backtest or len(self.backtest) == 0:
+            logger.error("No backtest data available to export")
+            return None
+        
+        try:
+            # Generate filename if not provided
+            if filename is None:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                strategy_name = self.strategy.name if self.strategy else 'unknown_strategy'
+                filename = f"backtest_{strategy_name}_{timestamp}.csv"
+            
+            # Ensure filename ends with .csv
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+            
+            # Convert backtest snapshots to list of dictionaries
+            backtest_data = []
+            for snapshot in self.backtest:
+                backtest_data.append(snapshot.to_dict())
+            
+            # Create DataFrame and export to CSV
+            df = pd.DataFrame(backtest_data)
+            
+            # Ensure proper column order
+            column_order = ['Date', 'Open', 'High', 'Low', 'Close', 'Prev Close', 
+                          'Decision', 'EntryPrice', 'ExitPrice', 'P/L', 'Cum. P/L']
+            
+            # Reorder columns if they exist
+            existing_columns = [col for col in column_order if col in df.columns]
+            df = df[existing_columns]
+            
+            # Export to CSV
+            df.to_csv(filename, index=False)
+            
+            logger.announcement(f"Backtest data exported to {filename}", 'success')
+            logger.info(f"Exported {len(backtest_data)} backtest rows")
+            
+            # Calculate and log summary statistics
+            total_trades = len([s for s in self.backtest if s.has_exit()])
+            profitable_trades = len([s for s in self.backtest if s.is_profitable()])
+            final_pnl = self.backtest[-1].cumulative_pnl if self.backtest else 0
+            
+            win_rate = (profitable_trades/total_trades*100) if total_trades > 0 else 0
+            logger.info(f"Backtest Summary - Total Trades: {total_trades}, "
+                       f"Profitable: {profitable_trades}, "
+                       f"Win Rate: {win_rate:.1f}%, "
+                       f"Final P/L: {final_pnl:.2f}")
+            
+            return filename
+            
+        except Exception as e:
+            logger.error(f"Error exporting backtest to CSV: {str(e)}")
+            raise Exception(f"Error exporting backtest to CSV: {str(e)}")
+
 class BacktestSnapshot:
-    def __init__(self, trader: Trader, current_date, market_data):
-        self.current_time = current_date
-        self.decision = trader.decision
-        self.market_data = market_data  # OHLCV data for this period
-        self.trader = trader  # Store trader reference
-        self.strategy_indicators = self.get_strategy_indicators(trader.strategy) if trader.strategy else {}
-        
-    def get_strategy_indicators(self, strategy):
+    def __init__(self, backtest_row_dict):
         """
-        Extract relevant indicators from the strategy for analysis
+        Initialize from the new backtest row dictionary structure
         """
-        indicators = {}
-        
-        # If it's an Ichimoku strategy, get the indicator values from params
-        if hasattr(strategy, 'params'):
-            indicators = {
-                'tenkan': getattr(strategy.params, 'tenkan', None),
-                'kijun': getattr(strategy.params, 'kijun', None),
-                'psar_mes': getattr(strategy.params, 'psar_mes', [])[-1] if getattr(strategy.params, 'psar_mes', []) else None,
-                'psar_mym': getattr(strategy.params, 'psar_mym', [])[-1] if getattr(strategy.params, 'psar_mym', []) else None,
-                'number_of_contracts': getattr(strategy.params, 'number_of_contracts', None),
-                'psar_difference': getattr(strategy.params, 'psar_difference', None),
-            }
-        
-        return indicators
+        self.date = backtest_row_dict.get('Date')
+        self.open = backtest_row_dict.get('Open', 0)
+        self.high = backtest_row_dict.get('High', 0)
+        self.low = backtest_row_dict.get('Low', 0)
+        self.close = backtest_row_dict.get('Close', 0)
+        self.prev_close = backtest_row_dict.get('Prev Close', 0)
+        self.decision = backtest_row_dict.get('Decision', 'STAY')
+        self.entry_price = backtest_row_dict.get('EntryPrice', '')
+        self.exit_price = backtest_row_dict.get('ExitPrice', '')
+        self.pnl = backtest_row_dict.get('P/L', 0.0)
+        self.cumulative_pnl = backtest_row_dict.get('Cum. P/L', 0.0)
 
     def to_dict(self):
+        """
+        Convert back to dictionary format for CSV export or analysis
+        """
         return {
-            'current_time': self.current_time.strftime('%Y%m%d%H%M%S') if isinstance(self.current_time, datetime) else str(self.current_time),
-            'decision': self.decision,
-            'market_data': {
-                'open': self.market_data.get('open', 0),
-                'high': self.market_data.get('high', 0),
-                'low': self.market_data.get('low', 0),
-                'close': self.market_data.get('close', 0),
-                'volume': self.market_data.get('volume', 0),
-            } if self.market_data else {},
-            'strategy_indicators': self.strategy_indicators,
+            'Date': self.date.strftime('%Y-%m-%d') if hasattr(self.date, 'strftime') else str(self.date),
+            'Open': self.open,
+            'High': self.high,
+            'Low': self.low,
+            'Close': self.close,
+            'Prev Close': self.prev_close,
+            'Decision': self.decision,
+            'EntryPrice': self.entry_price,
+            'ExitPrice': self.exit_price,
+            'P/L': self.pnl,
+            'Cum. P/L': self.cumulative_pnl
         }
+    
+    def has_entry(self):
+        """Check if this snapshot contains an entry"""
+        return self.entry_price != '' and self.entry_price != 0
+    
+    def has_exit(self):
+        """Check if this snapshot contains an exit"""
+        return self.exit_price != '' and self.exit_price != 0
+    
+    def is_profitable(self):
+        """Check if this trade was profitable"""
+        return self.pnl > 0 if self.pnl != 0 else False
 
 class TraderSnapshot:
 
