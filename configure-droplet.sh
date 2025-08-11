@@ -1,9 +1,16 @@
+#!/bin/bash
+
+# This script is used to configure a new droplet for the AGM Auto Trader.
+
+set -e
+set -o pipefail
+
 # Update the droplet's package manager
 sudo apt-get update
 sudo apt-get upgrade
 
 # Install required packages
-sudo apt-get install -y git python3 python3-pip python3-venv
+sudo apt-get install -y git python3 python3-pip python3-venv neovim
 
 # Add Docker's official GPG key:
 sudo apt-get update
@@ -44,7 +51,7 @@ cd agm-trader
 
 # Create a .env file
 cp template.env .env
-nano .env
+nvim .env
 
 # Build and start the containers
 docker compose build
