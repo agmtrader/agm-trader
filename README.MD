@@ -1,0 +1,4 @@
+- Clone this repo
+- Fill in the .env file with your IBKR credentials for the Trader
+- Provision a droplet
+- Run the droplet.sh script
