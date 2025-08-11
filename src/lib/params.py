@@ -47,8 +47,6 @@ class ContractData:
             'contract': contract_info,
             'data': formatted_data,
             'symbol': self.get_symbol(),
-            'has_data': self.has_data(),
-            'data_points': len(self.data)
         }
 
 class BaseStrategyParams(ABC):
@@ -65,17 +63,12 @@ class BaseStrategyParams(ABC):
                 return contract_data
         return None
 
-    def get_position_count(self) -> int:
-        """Get the number of positions"""
-        return len(self.positions)
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             'contracts': [contract_data.to_dict() for contract_data in self.contracts],
             'open_orders': self.open_orders,
             'executed_orders': self.executed_orders,
             'positions': self.positions,
-            'position_count': self.get_position_count()
         }
 
 class IchimokuBaseParams(BaseStrategyParams):
@@ -101,9 +94,6 @@ class IchimokuBaseParams(BaseStrategyParams):
         self.number_of_contracts: int = 0
         self.psar_mes: List[float] = []
         self.psar_mym: List[float] = []
-        self.psar_difference: float = 0  # Store PSAR difference for TP calculations
-        self.simulated_mym: List[Dict[str, Any]] = []  # Store MYM simulation data
-        self.stop_loss_updates: List[Dict[str, Any]] = []  # Store stop loss updates
         
     def get_mes_data(self) -> Optional[ContractData]:
         """Get MES contract data"""
@@ -120,9 +110,6 @@ class IchimokuBaseParams(BaseStrategyParams):
             'number_of_contracts': self.number_of_contracts,
             'psar_mes': self.psar_mes,
             'psar_mym': self.psar_mym,
-            'psar_difference': self.psar_difference,
-            'simulated_mym': self.simulated_mym,
-            'stop_loss_updates': self.stop_loss_updates
         }
         return {
             **ichimoku_dict,

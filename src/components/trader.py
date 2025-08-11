@@ -276,9 +276,6 @@ class Trader:
                     # Check connection before closing positions
                     if self.is_connected() or self.reconnect():
                         self.close_all_positions()
-                    # Clear MYM simulation data when exiting
-                    if hasattr(strategy, '_clear_mym_simulation'):
-                        strategy._clear_mym_simulation()
                     continue
 
                 # Create orders for the strategy and place them
@@ -328,17 +325,13 @@ class Trader:
             return
         
         # Get the primary contract data (assuming MES is the main one)
-        primary_contract_data = None
-        for contract_data in self.strategy.params.contracts:
-            if contract_data.data and len(contract_data.data) > 0:
-                primary_contract_data = contract_data
-                break
-        
-        if not primary_contract_data or not primary_contract_data.data:
+        main_contract = self.strategy.params.contracts[0]
+
+        if not main_contract or not main_contract.data:
             logger.error("No historical data available for backtesting")
             return
         
-        historical_data = primary_contract_data.data
+        historical_data = main_contract.data
         logger.info(f"Running backtest on {len(historical_data)} data points")
         
         # Clear previous backtest results
@@ -352,8 +345,7 @@ class Trader:
             logger.warning(f"Not enough historical data for backtesting. Need at least {min_periods} periods, got {len(historical_data)}")
             return
         
-        # Backtest simulation variables
-        position = None  # None, 'LONG', or 'SHORT'
+        position = None
         entry_price = 0.0
         quantity = 0
         tp1_price = 0.0

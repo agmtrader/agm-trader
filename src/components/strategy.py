@@ -26,8 +26,14 @@ class IchimokuBase(Strategy):
     
     def __init__(self, initialParams: IchimokuBaseParams):
         super().__init__(initialParams)
-        self.name = 'Ichimoku Base'
-    
+        self.name = 'Ichimoku Base'    
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            **super().to_dict()
+        }
+
     def run(self):
         logger.announcement(f'Executing strategy...', 'info')
 
@@ -228,12 +234,6 @@ class IchimokuBase(Strategy):
                 logger.warning(f'Weekly exit signal detected. Green weekly candle - exit short position.')
                 return 'EXIT'
 
-        # Check MYM simulation for early exits
-        mym_exit_signal = self._check_mym_simulation()
-        if mym_exit_signal != 'STAY':
-            logger.warning(f'MYM simulation exit signal: {mym_exit_signal}')
-            return 'EXIT'
-
         # Check entry candle validation (if we have existing positions)
         entry_candle_exit = self._check_entry_candle_validation(mes_data.data, mym_data.data, current_psar_mes, current_psar_mym)
         if entry_candle_exit:
@@ -329,9 +329,6 @@ class IchimokuBase(Strategy):
                 parentId=parent.orderId,
                 transmit=True  # Last order transmits all
             )
-
-            # Store MYM simulation data
-            self._setup_mym_simulation('LONG', mym_psar_price, tp1_price, tp2_price, sl_price, qty)
             
             return [parent, stop_loss, tp1, tp2]
         
@@ -384,20 +381,11 @@ class IchimokuBase(Strategy):
                 transmit=True  # Last order transmits all
             )
 
-            # Store MYM simulation data
-            self._setup_mym_simulation('SHORT', mym_psar_price, tp1_price, tp2_price, sl_price, qty)
-            
             return [parent, stop_loss, tp1, tp2]
         
         else:
             logger.info(f"No order created for action: {action}")
             return None
-
-    def to_dict(self):
-        return {
-            'name': self.name,
-            **super().to_dict()
-        }
 
     def calculate_tenkan(self, data):
         last_5_days_mes = data[-5:]
@@ -589,79 +577,6 @@ class IchimokuBase(Strategy):
                           current_date.isocalendar()[1] != prev_date.isocalendar()[1])  # Different week
         
         return is_weekly_candle, current_candle, prev_candle
-    
-    def _setup_mym_simulation(self, action, entry_price, tp1_price, tp2_price, sl_price, qty):
-        """Set up MYM simulation to monitor for early exits"""
-        if not hasattr(self.params, 'simulated_mym'):
-            self.params.simulated_mym = []
-        
-        simulation = {
-            'action': action,
-            'entry': entry_price,
-            'tp1': tp1_price,
-            'tp2': tp2_price,
-            'sl': sl_price,
-            'qty': qty,
-            'tp1_hit': False,
-            'tp2_hit': False,
-            'sl_hit': False
-        }
-        
-        self.params.simulated_mym.append(simulation)
-        logger.info(f"MYM simulation setup - Action: {action}, Entry: {entry_price:.2f}, TP1: {tp1_price:.2f}, TP2: {tp2_price:.2f}, SL: {sl_price:.2f}")
-
-    def _check_mym_simulation(self):
-        """Check if any MYM simulated positions should trigger exits"""
-        if not hasattr(self.params, 'simulated_mym') or not self.params.simulated_mym:
-            return 'STAY'
-        
-        mym_data = self.params.get_mym_data()
-        if not mym_data or not mym_data.has_data():
-            return 'STAY'
-        
-        current_mym_price = mym_data.get_latest_price()
-        logger.info(f"Checking MYM simulation against current price: {current_mym_price:.2f}")
-        
-        for i, sim in enumerate(self.params.simulated_mym):
-            if sim['action'] == 'LONG':
-                # Check TP levels
-                if not sim['tp1_hit'] and current_mym_price >= sim['tp1']:
-                    logger.warning(f"MYM simulation TP1 hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['tp1_hit'] = True
-                    return 'EXIT_MYM_TP1'
-                elif not sim['tp2_hit'] and current_mym_price >= sim['tp2']:
-                    logger.warning(f"MYM simulation TP2 hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['tp2_hit'] = True
-                    return 'EXIT_MYM_TP2'
-                # Check SL
-                elif not sim['sl_hit'] and current_mym_price <= sim['sl']:
-                    logger.warning(f"MYM simulation SL hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['sl_hit'] = True
-                    return 'EXIT_MYM_SL'
-            
-            elif sim['action'] == 'SHORT':
-                # Check TP levels
-                if not sim['tp1_hit'] and current_mym_price <= sim['tp1']:
-                    logger.warning(f"MYM simulation TP1 hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['tp1_hit'] = True
-                    return 'EXIT_MYM_TP1'
-                elif not sim['tp2_hit'] and current_mym_price <= sim['tp2']:
-                    logger.warning(f"MYM simulation TP2 hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['tp2_hit'] = True
-                    return 'EXIT_MYM_TP2'
-                # Check SL
-                elif not sim['sl_hit'] and current_mym_price >= sim['sl']:
-                    logger.warning(f"MYM simulation SL hit at {current_mym_price:.2f} - triggering MES exit")
-                    sim['sl_hit'] = True
-                    return 'EXIT_MYM_SL'
-        
-        return 'STAY'
-
-    def _clear_mym_simulation(self):
-        """Clear MYM simulation data"""
-        if hasattr(self.params, 'simulated_mym'):
-            self.params.simulated_mym.clear()
-            logger.info("MYM simulation data cleared")
 
     def calculate_number_of_contracts(self, take_profit, stop_loss):
         return 12
