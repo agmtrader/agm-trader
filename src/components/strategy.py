@@ -121,8 +121,8 @@ class IchimokuBase(Strategy):
         1. If PSAR MES is negative and PSAR MYM is negative, put a limit buy order at the PSAR MES price
         (to take the trend change). Open 12 contracts in this occasion.
 
-        2. If the current candle is between the 4 first candles of the positive trend started by the PSAR,
-        and if PSAR MES + and PSAR MYM + and the highest high since the positive trend started by the PSAR
+        2. If the current candle is in the 4 first candles of the positive trend started by the PSAR,
+        and if PSAR MES is positive and PSAR MYM is positive and the highest high since the positive trend started by the PSAR
         is less than 61.8% of the difference between the last PSAR of the previous downtrend and the first PSAR of the current uptrend,
         we buy the following number of contracts:
         - If close of the candle where this happens is less than 38.2% of said difference,
@@ -142,9 +142,10 @@ class IchimokuBase(Strategy):
 
         if mes_psar_negative and mym_psar_negative:
             self.params.number_of_contracts = 12
-            self.params.psar_difference = 0  # Store for later use in order creation
+            self.params.psar_difference = 0
             logger.warning(f'Buy signal detected. Negative PSAR. 12 contracts')
             return 'LONG'
+        
         elif mes_psar_positive and mym_psar_positive and trend_changed and candles_since_change is not None and candles_since_change <= 4:
             if difference > 0 and highest_high and highest_high < (difference * 0.618):
                 # Get the entry candle (the one from candles_since_change ago)

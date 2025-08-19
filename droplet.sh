@@ -12,7 +12,6 @@ if [ -z "$SSH_CONNECTION" ]; then
 fi
 
 # This script is used to configure a new droplet for the AGM Auto Trader.
-
 set -e
 set -o pipefail
 

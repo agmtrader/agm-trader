@@ -15,7 +15,7 @@ from src.components.strategy import IchimokuBase
 from src.lib.params import IchimokuBaseParams, ContractData
 
 SLEEP_TIME = 86400
-CONNECTION_CHECK_INTERVAL = 30  # Check connection every 30 seconds
+CONNECTION_CHECK_INTERVAL = 30
 MAX_RECONNECT_ATTEMPTS = 5
 
 class Trader:
@@ -232,7 +232,7 @@ class Trader:
 
         # Run backtest first
         self.run_backtest(strategy_name)
-        #self.close_all_positions()
+        self.close_all_positions()
 
         logger.announcement(f"Running strategy: {strategy.name}", 'info')
         
@@ -242,11 +242,9 @@ class Trader:
             while True:
 
                 if not self.running:
-                    # Stop connection monitor when exiting
                     self.stop_connection_monitor()
                     exit()
 
-                # Simple connection check - the dedicated monitor thread handles reconnection
                 if not self.is_connected():
                     logger.warning("Connection not available for trading. Monitor thread should be handling reconnection...")
                     time.sleep(SLEEP_TIME)
@@ -285,8 +283,8 @@ class Trader:
                     # Check connection before placing order
                     if self.is_connected():
                         # TODO: Uncomment the line below when ready for live trading
-                        # self.place_order(order)
-                        logger.warning("Order placement is currently disabled for safety")
+                        self.place_order(order)
+                        # logger.warning("Order placement is currently disabled for safety")
                     else:
                         logger.error("Cannot place order - no connection to IBKR")
                 else:
@@ -313,289 +311,6 @@ class Trader:
             raise Exception(f"Error running strategy: {str(e)}")
 
     def run_backtest(self, strategy_name: str):
-        """
-        Run backtest using historical data from strategy params
-        Returns array with columns: Date, Open, High, Low, Close, Prev Close, Decision, EntryPrice, ExitPrice, P/L, Cum. P/L
-        """
-        
-        logger.announcement(f"Starting backtest for strategy: {strategy_name}", 'info')
-        
-        if not self.strategy:
-            logger.error("No strategy loaded for backtesting")
-            return
-        
-        # Get the primary contract data (assuming MES is the main one)
-        main_contract = self.strategy.params.contracts[0]
-
-        if not main_contract or not main_contract.data:
-            logger.error("No historical data available for backtesting")
-            return
-        
-        historical_data = main_contract.data
-        logger.info(f"Running backtest on {len(historical_data)} data points")
-        
-        # Clear previous backtest results
-        self.backtest = []
-        
-        # We need at least enough data points for the strategy to calculate indicators
-        # For Ichimoku, we typically need at least 26 periods
-        min_periods = 26
-        
-        if len(historical_data) < min_periods:
-            logger.warning(f"Not enough historical data for backtesting. Need at least {min_periods} periods, got {len(historical_data)}")
-            return
-        
-        position = None
-        entry_price = 0.0
-        quantity = 0
-        tp1_price = 0.0
-        tp2_price = 0.0
-        sl_price = 0.0
-        tp1_qty = 0
-        tp2_qty = 0
-        cumulative_pnl = 0.0
-        
-        try:
-            # Iterate through historical data starting from min_periods
-            for i in range(min_periods, len(historical_data)):
-                current_candle = historical_data[i]
-                prev_candle = historical_data[i-1] if i > 0 else current_candle
-                current_date = current_candle['date']
-                
-                # Create a subset of data up to current point for strategy calculation
-                subset_data = historical_data[:i+1]
-                
-                # Temporarily store original data and update with subset
-                original_data = {}
-                for contract_data in self.strategy.params.contracts:
-                    if contract_data.data:
-                        # Store original data
-                        original_data[id(contract_data)] = contract_data.data
-                        # Update with subset for strategy calculation
-                        contract_data.data = subset_data
-                
-                # Clear live trading data for clean backtest
-                self.strategy.params.open_orders = []
-                self.strategy.params.executed_orders = []
-                self.strategy.params.positions = []
-                
-                # Run strategy with current data subset
-                decision = self.strategy.run()
-                self.decision = decision
-                
-                # Initialize backtest row
-                backtest_row = {
-                    'Date': current_date,
-                    'Open': current_candle['open'],
-                    'High': current_candle['high'],
-                    'Low': current_candle['low'],
-                    'Close': current_candle['close'],
-                    'Prev Close': prev_candle['close'],
-                    'Decision': decision,
-                    'EntryPrice': '',
-                    'ExitPrice': '',
-                    'P/L': 0.0,
-                    'Cum. P/L': cumulative_pnl
-                }
-                
-                # Check for exits first (stop loss, take profit, or strategy exit)
-                if position:
-                    exit_price = None
-                    exit_reason = ''
-                    
-                    # Check stop loss and take profit levels
-                    if position == 'LONG':
-                        # For daily data, use close price to determine exits
-                        # Check stop loss (close price goes below SL)
-                        if current_candle['close'] <= sl_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'SL'
-                        # Check TP1 first (smaller target, more likely to hit first)
-                        elif tp1_qty > 0 and current_candle['close'] >= tp1_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'TP1'
-                        # Check TP2 only if TP1 was already hit (tp1_qty should be 0)
-                        elif tp2_qty > 0 and tp1_qty == 0 and current_candle['close'] >= tp2_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'TP2'
-                    
-                    elif position == 'SHORT':
-                        # For daily data, use close price to determine exits
-                        # Check stop loss (close price goes above SL)
-                        if current_candle['close'] >= sl_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'SL'
-                        # Check TP1 first (smaller target, more likely to hit first)
-                        elif tp1_qty > 0 and current_candle['close'] <= tp1_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'TP1'
-                        # Check TP2 only if TP1 was already hit (tp1_qty should be 0)
-                        elif tp2_qty > 0 and tp1_qty == 0 and current_candle['close'] <= tp2_price:
-                            exit_price = current_candle['close']  # Use actual close price
-                            exit_reason = 'TP2'
-                    
-                    # Check strategy exit signal
-                    if decision == 'EXIT':
-                        exit_price = current_candle['close']
-                        exit_reason = 'EXIT_SIGNAL'
-                        quantity = 0  # Close full position
-                    
-                    # Process exit if one occurred
-                    if exit_price:
-                        backtest_row['ExitPrice'] = exit_price
-                        
-                        # Calculate P/L based on the quantity being closed
-                        if exit_reason == 'TP1':
-                            exit_qty = tp1_qty
-                        elif exit_reason == 'TP2':
-                            exit_qty = tp2_qty
-                        else:
-                            # SL or EXIT_SIGNAL - close full remaining position
-                            exit_qty = quantity
-                        
-                        # Validate exit_price is not infinity or NaN
-                        if not (exit_price and exit_price != float('inf') and exit_price != float('-inf') and not math.isnan(exit_price)):
-                            logger.error(f"Invalid exit price: {exit_price}, using current close price instead")
-                            exit_price = current_candle['close']
-                            backtest_row['ExitPrice'] = exit_price
-                        
-                        # Calculate P/L
-                        if position == 'LONG':
-                            pnl = (exit_price - entry_price) * exit_qty
-                        else:  # SHORT
-                            pnl = (entry_price - exit_price) * exit_qty
-                        
-                        # Validate P/L is not infinity or NaN
-                        if math.isnan(pnl) or pnl == float('inf') or pnl == float('-inf'):
-                            logger.error(f"Invalid P/L calculated: {pnl}, setting to 0")
-                            pnl = 0.0
-                        
-                        backtest_row['P/L'] = pnl
-                        cumulative_pnl += pnl
-                        
-                        # Validate cumulative P/L
-                        if math.isnan(cumulative_pnl) or cumulative_pnl == float('inf') or cumulative_pnl == float('-inf'):
-                            logger.error(f"Invalid cumulative P/L: {cumulative_pnl}, resetting to current P/L")
-                            cumulative_pnl = pnl
-                        
-                        backtest_row['Cum. P/L'] = cumulative_pnl
-                        backtest_row['Decision'] = f"{decision}_{exit_reason}" if decision not in ['EXIT'] else exit_reason
-                        
-                        # Update position tracking
-                        if exit_reason == 'TP1':
-                            # Only reduce TP1 quantity, TP2 remains
-                            tp1_qty = 0
-                            # Remaining quantity is now just TP2
-                            quantity = tp2_qty
-                        elif exit_reason == 'TP2':
-                            # Close TP2 quantity, only TP1 might remain
-                            tp2_qty = 0
-                            # If TP1 was already closed, close the position
-                            if tp1_qty == 0:
-                                quantity = 0
-                        else:
-                            # Close full position for SL or EXIT
-                            quantity = 0
-                            tp1_qty = 0
-                            tp2_qty = 0
-                        
-                        # Close position completely if no quantity remains
-                        if quantity <= 0 and tp1_qty <= 0 and tp2_qty <= 0:
-                            position = None
-                            entry_price = 0.0
-                            quantity = 0
-                            tp1_price = 0.0
-                            tp2_price = 0.0
-                            sl_price = 0.0
-                            tp1_qty = 0
-                            tp2_qty = 0
-                
-                # Check for new entries (only if no position)
-                if not position and decision in ['LONG', 'SHORT']:
-                    # Use the strategy's create_order method to get proper order details
-                    orders = self.strategy.create_order(decision)
-                    
-                    if orders and len(orders) > 0:
-                        # Extract order details from the strategy's orders
-                        parent_order = orders[0]  # First order is the entry
-                        entry_price = parent_order.lmtPrice
-                        quantity = parent_order.totalQuantity
-                        
-                        # Initialize defaults
-                        sl_price = entry_price  # Default fallback
-                        tp1_price = entry_price * 1.01 if decision == 'LONG' else entry_price * 0.99  # Default fallback
-                        tp2_price = entry_price * 1.02 if decision == 'LONG' else entry_price * 0.98  # Default fallback
-                        tp1_qty = 0
-                        tp2_qty = 0
-                        
-                        # Parse child orders based on known structure: [Parent, StopLoss, TP1, TP2]
-                        if len(orders) >= 4:
-                            # Order 1: Stop Loss (StopOrder)
-                            stop_order = orders[1]
-                            if hasattr(stop_order, 'stopPrice'):
-                                sl_price = stop_order.stopPrice
-                                #logger.info(f"Found SL order at {sl_price:.2f}")
-                            
-                            # Order 2: TP1 (LimitOrder)
-                            tp1_order = orders[2]
-                            if hasattr(tp1_order, 'lmtPrice'):
-                                tp1_price = tp1_order.lmtPrice
-                                tp1_qty = tp1_order.totalQuantity
-                                #logger.info(f"Found TP1 order at {tp1_price:.2f} for {tp1_qty} contracts")
-                            
-                            # Order 3: TP2 (LimitOrder)
-                            tp2_order = orders[3]
-                            if hasattr(tp2_order, 'lmtPrice'):
-                                tp2_price = tp2_order.lmtPrice
-                                tp2_qty = tp2_order.totalQuantity
-                                #logger.info(f"Found TP2 order at {tp2_price:.2f} for {tp2_qty} contracts")
-                        else:
-                            logger.warning(f"Expected 4 orders but got {len(orders)}, using defaults")
-                        
-                        # Validate prices are reasonable
-                        if not (0 < entry_price < 50000):
-                            logger.error(f"Invalid entry price {entry_price}, using current close {current_candle['close']}")
-                            entry_price = current_candle['close']
-                        
-                        if not (0 < sl_price < 50000):
-                            logger.error(f"Invalid SL price {sl_price}, using entry price {entry_price}")
-                            sl_price = entry_price
-                        
-                        if not (0 < tp1_price < 50000):
-                            logger.error(f"Invalid TP1 price {tp1_price}, using default calculation")
-                            tp1_price = entry_price * 1.01 if decision == 'LONG' else entry_price * 0.99
-                        
-                        if not (0 < tp2_price < 50000):
-                            logger.error(f"Invalid TP2 price {tp2_price}, using default calculation")
-                            tp2_price = entry_price * 1.02 if decision == 'LONG' else entry_price * 0.98
-                        
-                        # Set position
-                        position = decision
-                        backtest_row['EntryPrice'] = entry_price
-                        
-                        #logger.info(f"{decision} entry at {entry_price:.2f}, TP1: {tp1_price:.2f} ({tp1_qty}), TP2: {tp2_price:.2f} ({tp2_qty}), SL: {sl_price:.2f}")
-                    else:
-                        logger.warning(f"Strategy returned {decision} but no orders were created")
-                
-                # Update cumulative P/L in row
-                backtest_row['Cum. P/L'] = cumulative_pnl
-                
-                # Add row to backtest results as BacktestSnapshot object
-                self.backtest.append(BacktestSnapshot(backtest_row))
-                
-                # Restore original data after strategy calculation
-                for contract_data in self.strategy.params.contracts:
-                    if id(contract_data) in original_data:
-                        contract_data.data = original_data[id(contract_data)]
-
-            self.export_backtest_to_csv()
-                
-            logger.announcement(f"Backtest completed. Generated {len(self.backtest)} rows, Final P/L: {cumulative_pnl:.2f}", 'success')
-                    
-        except Exception as e:
-            logger.error(f"Error during backtesting: {str(e)}")
-            raise Exception(f"Error during backtesting: {str(e)}")
-        
         return self.backtest
 
     # IBKR
@@ -778,26 +493,144 @@ class Trader:
                 orders = []
                 for trade in orders_response:
                     order_dict = {
-                        'contract': {
-                            'symbol': trade.contract.symbol,
-                            'secType': trade.contract.secType,
-                            'exchange': trade.contract.exchange,
-                            'currency': getattr(trade.contract, 'currency', 'USD'),
-                        },
-                        'order': {
-                            'orderId': trade.order.orderId,
-                            'action': trade.order.action,
-                            'totalQuantity': trade.order.totalQuantity,
-                            'orderType': trade.order.orderType,
-                            'lmtPrice': getattr(trade.order, 'lmtPrice', 0),
-                            'auxPrice': getattr(trade.order, 'auxPrice', 0),
-                        },
-                        'orderStatus': {
-                            'status': trade.orderStatus.status,
-                            'filled': trade.orderStatus.filled,
-                            'remaining': trade.orderStatus.remaining,
-                            'avgFillPrice': trade.orderStatus.avgFillPrice,
-                        }
+                        'orderId': trade.orderId,
+                        'clientId': trade.clientId,
+                        'permId': trade.permId,
+                        'action': trade.action,
+                        'totalQuantity': trade.totalQuantity,
+                        'orderType': trade.orderType,
+                        'lmtPrice': trade.lmtPrice,
+                        'auxPrice': trade.auxPrice,
+                        'tif': trade.tif,
+                        'activeStartTime': trade.activeStartTime,
+                        'activeStopTime': trade.activeStopTime,
+                        'ocaGroup': trade.ocaGroup,
+                        'ocaType': trade.ocaType,
+                        'orderRef': trade.orderRef,
+                        'transmit': trade.transmit,
+                        'parentId': trade.parentId,
+                        'blockOrder': trade.blockOrder,
+                        'sweepToFill': trade.sweepToFill,
+                        'displaySize': trade.displaySize,
+                        'triggerMethod': trade.triggerMethod,
+                        'outsideRth': trade.outsideRth,
+                        'hidden': trade.hidden,
+                        'goodAfterTime': trade.goodAfterTime,
+                        'goodTillDate': trade.goodTillDate,
+                        'rule80A': trade.rule80A,
+                        'allOrNone': trade.allOrNone,
+                        'minQty': trade.minQty,
+                        'percentOffset': trade.percentOffset,
+                        'overridePercentageConstraints': trade.overridePercentageConstraints,
+                        'trailStopPrice': trade.trailStopPrice,
+                        'trailingPercent': trade.trailingPercent,
+                        'faGroup': trade.faGroup,
+                        'faProfile': trade.faProfile,
+                        'faMethod': trade.faMethod,
+                        'faPercentage': trade.faPercentage,
+                        'designatedLocation': trade.designatedLocation,
+                        'openClose': trade.openClose,
+                        'origin': trade.origin,
+                        'shortSaleSlot': trade.shortSaleSlot,
+                        'exemptCode': trade.exemptCode,
+                        'discretionaryAmt': trade.discretionaryAmt,
+                        'eTradeOnly': trade.eTradeOnly,
+                        'firmQuoteOnly': trade.firmQuoteOnly,
+                        'nbboPriceCap': trade.nbboPriceCap,
+                        'optOutSmartRouting': trade.optOutSmartRouting,
+                        'auctionStrategy': trade.auctionStrategy,
+                        'startingPrice': trade.startingPrice,
+                        'stockRefPrice': trade.stockRefPrice,
+                        'delta': trade.delta,
+                        'stockRangeLower': trade.stockRangeLower,
+                        'stockRangeUpper': trade.stockRangeUpper,
+                        'randomizePrice': trade.randomizePrice,
+                        'randomizeSize': trade.randomizeSize,
+                        'volatility': trade.volatility,
+                        'volatilityType': trade.volatilityType,
+                        'deltaNeutralOrderType': trade.deltaNeutralOrderType,
+                        'deltaNeutralAuxPrice': trade.deltaNeutralAuxPrice,
+                        'deltaNeutralConId': trade.deltaNeutralConId,
+                        'deltaNeutralSettlingFirm': trade.deltaNeutralSettlingFirm,
+                        'deltaNeutralClearingAccount': trade.deltaNeutralClearingAccount,
+                        'deltaNeutralClearingIntent': trade.deltaNeutralClearingIntent,
+                        'deltaNeutralOpenClose': trade.deltaNeutralOpenClose,
+                        'deltaNeutralShortSale': trade.deltaNeutralShortSale,
+                        'deltaNeutralShortSaleSlot': trade.deltaNeutralShortSaleSlot,
+                        'deltaNeutralDesignatedLocation': trade.deltaNeutralDesignatedLocation,
+                        'continuousUpdate': trade.continuousUpdate,
+                        'referencePriceType': trade.referencePriceType,
+                        'basisPoints': trade.basisPoints,
+                        'basisPointsType': trade.basisPointsType,
+                        'scaleInitLevelSize': trade.scaleInitLevelSize,
+                        'scaleSubsLevelSize': trade.scaleSubsLevelSize,
+                        'scalePriceIncrement': trade.scalePriceIncrement,
+                        'scalePriceAdjustValue': trade.scalePriceAdjustValue,
+                        'scalePriceAdjustInterval': trade.scalePriceAdjustInterval,
+                        'scaleProfitOffset': trade.scaleProfitOffset,
+                        'scaleAutoReset': trade.scaleAutoReset,
+                        'scaleInitPosition': trade.scaleInitPosition,
+                        'scaleInitFillQty': trade.scaleInitFillQty,
+                        'scaleRandomPercent': trade.scaleRandomPercent,
+                        'scaleTable': trade.scaleTable,
+                        'hedgeType': trade.hedgeType,
+                        'hedgeParam': trade.hedgeParam,
+                        'account': trade.account,
+                        'settlingFirm': trade.settlingFirm,
+                        'clearingAccount': trade.clearingAccount,
+                        'clearingIntent': trade.clearingIntent,
+                        'algoStrategy': trade.algoStrategy,
+                        'algoParams': trade.algoParams,
+                        'smartComboRoutingParams': trade.smartComboRoutingParams,
+                        'algoId': trade.algoId,
+                        'whatIf': trade.whatIf,
+                        'notHeld': trade.notHeld,
+                        'solicited': trade.solicited,
+                        'modelCode': trade.modelCode,
+                        'orderComboLegs': trade.orderComboLegs,
+                        'orderMiscOptions': trade.orderMiscOptions,
+                        'referenceContractId': trade.referenceContractId,
+                        'peggedChangeAmount': trade.peggedChangeAmount,
+                        'isPeggedChangeAmountDecrease': trade.isPeggedChangeAmountDecrease,
+                        'referenceChangeAmount': trade.referenceChangeAmount,
+                        'referenceExchangeId': trade.referenceExchangeId,
+                        'adjustedOrderType': trade.adjustedOrderType,
+                        'triggerPrice': trade.triggerPrice,
+                        'adjustedStopPrice': trade.adjustedStopPrice,
+                        'adjustedStopLimitPrice': trade.adjustedStopLimitPrice,
+                        'adjustedTrailingAmount': trade.adjustedTrailingAmount,
+                        'adjustableTrailingUnit': trade.adjustableTrailingUnit,
+                        'lmtPriceOffset': trade.lmtPriceOffset,
+                        'conditions': trade.conditions,
+                        'conditionsCancelOrder': trade.conditionsCancelOrder,
+                        'conditionsIgnoreRth': trade.conditionsIgnoreRth,
+                        'extOperator': trade.extOperator,
+                        'cashQty': trade.cashQty,
+                        'mifid2DecisionMaker': trade.mifid2DecisionMaker,
+                        'mifid2DecisionAlgo': trade.mifid2DecisionAlgo,
+                        'mifid2ExecutionTrader': trade.mifid2ExecutionTrader,
+                        'mifid2ExecutionAlgo': trade.mifid2ExecutionAlgo,
+                        'dontUseAutoPriceForHedge': trade.dontUseAutoPriceForHedge,
+                        'isOmsContainer': trade.isOmsContainer,
+                        'discretionaryUpToLimitPrice': trade.discretionaryUpToLimitPrice,
+                        'autoCancelDate': trade.autoCancelDate,
+                        'filledQuantity': trade.filledQuantity,
+                        'refFuturesConId': trade.refFuturesConId,
+                        'autoCancelParent': trade.autoCancelParent,
+                        'shareholder': trade.shareholder,
+                        'imbalanceOnly': trade.imbalanceOnly,
+                        'routeMarketableToBbo': trade.routeMarketableToBbo,
+                        'parentPermId': trade.parentPermId,
+                        'usePriceMgmtAlgo': trade.usePriceMgmtAlgo,
+                        'duration': trade.duration,
+                        'postToAts': trade.postToAts,
+                        'advancedErrorOverride': trade.advancedErrorOverride,
+                        'manualOrderTime': trade.manualOrderTime,
+                        'minTradeQty': trade.minTradeQty,
+                        'minCompeteSize': trade.minCompeteSize,
+                        'competeAgainstBestOffset': trade.competeAgainstBestOffset,
+                        'midOffsetAtWhole': trade.midOffsetAtWhole,
+                        'midOffsetAtHalf': trade.midOffsetAtHalf,
                     }
                     orders.append(order_dict)
                 logger.success(f"Successfully got {len(orders)} open orders.")
