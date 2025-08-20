@@ -11,15 +11,10 @@ def deploy_main_routes(socketio):
         logger.announcement("Client connecting...", 'info')
         try:
             if trader:
-                emit('connected', TraderSnapshot(trader).to_dict(), broadcast=True)
+                emit('connected', 'Connected', broadcast=True)
                 logger.announcement("Client connected.", 'success')
-                return
-            emit('connected', None, broadcast=True)
-            logger.announcement("Client connected.", 'success')
-            return
         except Exception as e:
-            logger.error(f"{str(e)}")
-            return
+            logger.error(f"Error connecting client: {str(e)}")
 
     @socketio.on('disconnect')
     def handle_disconnect():

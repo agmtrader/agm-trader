@@ -10,7 +10,7 @@ from src.lib.params import IchimokuBaseParams
 from src.components.connection_manager import ConnectionManager
 from src.components.data_manager import DataManager
 from src.components.order_manager import OrderManager
-from src.components.backtest import BacktestSnapshot
+from src.lib.backtest import BacktestSnapshot
 
 SLEEP_TIME = 86400
 
@@ -102,134 +102,8 @@ class Trader:
             self.conn.stop_connection_monitor()
             raise Exception(f"Error running strategy: {str(e)}")
 
-    def execute_backtest(self, duration: str = '2 Y', bar_size: str = '1 day', output_dir: str = './'):
-        """Run an **offline** back-test of the already-initialised strategy.
-        The method will:
-        1. Download historical bars for every contract used by the strategy.
-        2. Step through the history day-by-day, asking the strategy for a
-           decision at each step and – where applicable – creating the orders
-           (only kept locally, never sent to IBKR).
-        3. Build an in-memory list of :class:`BacktestSnapshot` rows.
-        4. Persist the results to *CSV* and finally return the list.
-
-        Parameters
-        ----------
-        duration : str
-            IBKR duration string passed to ``reqHistoricalData``.
-        bar_size : str
-            Bar size for historical download.
-        output_dir : str
-            Directory where the CSV will be written. Defaults to repo root.
-        """
-
-        logger.announcement("Starting back-test …", 'info')
-
-        if not self.strategy:
-            # Create a default strategy if backtest() is invoked directly.
-            self.strategy = IchimokuBase(IchimokuBaseParams())
-
-        # ------------------------------------------------------------------
-        # 1. Pull historical bars for every contract ONCE.
-        # ------------------------------------------------------------------
-        full_history = {}
-        for contract_data in self.strategy.params.contracts:
-            symbol = contract_data.get_symbol()
-            bars = self.data.get_historical_data(contract_data.contract,
-                                                duration=duration,
-                                                bar_size=bar_size)
-            if not bars:
-                raise RuntimeError(f"No historical data for {symbol}")
-            full_history[symbol] = bars
-            contract_data.data = []  # reset (will be filled incrementally)
-
-        # Align to the shortest history length so both MES & MYM have data.
-        min_length = min(len(b) for b in full_history.values())
-
+    def execute_backtest(self):
         snapshots = []
-        cumulative_pnl = 0.0
-        current_position = None  # 'LONG' | 'SHORT' | None
-        entry_price = 0.0
-        entry_qty = 0
-
-        # We need at least 21 bars before indicators are fully valid
-        start_at = 22 if min_length > 22 else 0
-
-        for idx in range(start_at, min_length):
-            # ------------------------------------------------------------------
-            # 2. Feed the strategy *incremental* history up to *idx*.
-            # ------------------------------------------------------------------
-            for contract_data in self.strategy.params.contracts:
-                sym = contract_data.get_symbol()
-                contract_data.data = full_history[sym][: idx + 1]
-
-            # During back-test we manually feed historical bars; avoid additional
-            # API hits. Positions/orders remain empty.
-            self.strategy.refresh_params(self.data)
-
-            decision = self.strategy.run()
-
-            # Collect order details – purely informational.
-            orders = self.strategy.create_orders(decision) if decision in ('LONG', 'SHORT') else None
-
-            # ------------------------------------------------------------------
-            # 3. Build snapshot row
-            # ------------------------------------------------------------------
-            mes_bar = full_history['MES'][idx]
-            prev_close = full_history['MES'][idx - 1]['close'] if idx > 0 else mes_bar['close']
-
-            entry_price_cell = ''
-            exit_price_cell = ''
-            pnl_cell = 0.0
-
-            # Handle position bookkeeping
-            if decision in ('LONG', 'SHORT') and current_position is None:
-                current_position = decision
-                entry_price = mes_bar['close']
-                entry_qty = self.strategy.params.number_of_contracts
-                entry_price_cell = entry_price
-
-            elif decision == 'EXIT' and current_position is not None:
-                exit_price = mes_bar['close']
-                if current_position == 'LONG':
-                    pnl_cell = (exit_price - entry_price) * entry_qty
-                else:  # SHORT
-                    pnl_cell = (entry_price - exit_price) * entry_qty
-
-                cumulative_pnl += pnl_cell
-                exit_price_cell = exit_price
-                current_position = None
-                entry_price = 0.0
-                entry_qty = 0
-
-            snapshot_row = {
-                'Date': mes_bar['date'],
-                'Open': mes_bar['open'],
-                'High': mes_bar['high'],
-                'Low': mes_bar['low'],
-                'Close': mes_bar['close'],
-                'Prev Close': prev_close,
-                'Decision': decision,
-                'EntryPrice': entry_price_cell,
-                'ExitPrice': exit_price_cell,
-                'P/L': round(pnl_cell, 2),
-                'Cum. P/L': round(cumulative_pnl, 2),
-            }
-
-            snapshots.append(BacktestSnapshot(snapshot_row))
-
-            # Optional: log each snapshot decision
-            logger.info(f"Back-test {snapshot_row['Date']} → {decision}")
-
-        # ------------------------------------------------------------------
-        # 4. Export to CSV
-        # ------------------------------------------------------------------
-        snapshots_df = pd.DataFrame(snapshots)
-        snapshots_df.to_csv('backtest.csv', index=False)
-
-        logger.success(f"Back-test completed. Results written to backtest.csv")
-
-        # Store internally and return
-        self.backtest = snapshots
         return snapshots
 
 class TraderSnapshot:
