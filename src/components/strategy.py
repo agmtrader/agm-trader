@@ -1,9 +1,10 @@
-from src.lib.params import BaseStrategyParams, IchimokuBaseParams, ContractData
+from src.lib.params import BaseStrategyParams, IchimokuBaseParams
 from abc import ABC, abstractmethod
 from ib_insync import *
 import numpy as np 
 from src.utils.logger import logger
 from datetime import datetime
+from src.components.data_manager import DataManager
 
 class Strategy(ABC):
     def __init__(self, initialParams: BaseStrategyParams):
@@ -14,7 +15,12 @@ class Strategy(ABC):
         pass
 
     @abstractmethod
-    def create_order(self, action: str):
+    def create_orders(self, action: str):
+        pass
+
+    @abstractmethod
+    def refresh_params(self, data_manager):
+        """Refresh internal parameters using the supplied DataManager instance."""
         pass
 
     def to_dict(self):
@@ -33,6 +39,15 @@ class IchimokuBase(Strategy):
             'name': self.name,
             **super().to_dict()
         }
+
+    def refresh_params(self, data_manager):
+        logger.announcement("Refreshing strategy params...", 'info')
+        for contract_data in self.params.contracts:
+            contract_data.data = data_manager.get_historical_data(contract_data.contract)
+        self.params.open_orders = data_manager.get_open_orders()
+        self.params.executed_orders = data_manager.get_completed_orders()
+        self.params.positions = data_manager.get_positions()
+        logger.success("Successfully refreshed strategy params.")
 
     def run(self):
         logger.announcement(f'Executing strategy...', 'info')
@@ -62,16 +77,16 @@ class IchimokuBase(Strategy):
         logger.info(f"Latest MES price: {mes_price:.2f}, Latest MYM price: {mym_price:.2f}")
 
         # Calculate Tenkan and Kijun
-        tenkan = self.calculate_tenkan(mes_data.data)
-        kijun = self.calculate_kijun(mes_data.data)
+        tenkan = self._calculate_tenkan(mes_data.data)
+        kijun = self._calculate_kijun(mes_data.data)
         self.params.tenkan = tenkan
         self.params.kijun = kijun
         logger.info(f"Tenkan: {tenkan:.2f}, Kijun: {kijun:.2f}")
 
         # Calculate current PSAR
         try:
-            psar_mes = self.calculate_parabolic_sar(mes_data.data)
-            psar_mym = self.calculate_parabolic_sar(mym_data.data)
+            psar_mes = self._calculate_parabolic_sar(mes_data.data)
+            psar_mym = self._calculate_parabolic_sar(mym_data.data)
             
             if len(psar_mes) == 0 or len(psar_mym) == 0:
                 logger.error("PSAR calculation returned empty arrays")
@@ -89,7 +104,7 @@ class IchimokuBase(Strategy):
             return 'STAY'
 
         # Has it been 4 candles or less since the psar changed from negative to positive?
-        trend_changed, candles_since_change = self.find_recent_trend_change(psar_mes, mes_data.data)
+        trend_changed, candles_since_change = self._find_recent_trend_change(psar_mes, mes_data.data)
         logger.info(f"Trend changed: {trend_changed}, Candles since change: {candles_since_change}")
 
         # Calculate highest high and lowest low since the trend change
@@ -101,7 +116,7 @@ class IchimokuBase(Strategy):
         
         if trend_changed and candles_since_change is not None:
             # Get last psar of previous downtrend and first psar of current uptrend
-            last_down_psar, first_up_psar = self.get_trend_change_psars(psar_mes, mes_data.data)
+            last_down_psar, first_up_psar = self._get_trend_change_psars(psar_mes, mes_data.data)
 
             # Calculate difference properly with null checks
             if last_down_psar is not None and first_up_psar is not None:
@@ -109,8 +124,8 @@ class IchimokuBase(Strategy):
             else:
                 difference = 0
 
-            highest_high = self.calculate_highest_high_since_change(mes_data.data, candles_since_change)
-            lowest_low = self.calculate_lowest_low_since_change(mes_data.data, candles_since_change)
+            highest_high = self._calculate_highest_high_since_change(mes_data.data, candles_since_change)
+            lowest_low = self._calculate_lowest_low_since_change(mes_data.data, candles_since_change)
             logger.info(f"Highest high since change: {highest_high}, Lowest low since change: {lowest_low}")
             logger.info(f"Last down PSAR: {last_down_psar}, First up PSAR: {first_up_psar}")
             logger.info(f"PSAR difference: {difference:.2f}")
@@ -132,10 +147,10 @@ class IchimokuBase(Strategy):
         """
 
         # Check PSAR conditions
-        mes_psar_negative = self.is_psar_negative(current_psar_mes, mes_data.data)
-        mym_psar_negative = self.is_psar_negative(current_psar_mym, mym_data.data)
-        mes_psar_positive = self.is_psar_positive(current_psar_mes, mes_data.data)
-        mym_psar_positive = self.is_psar_positive(current_psar_mym, mym_data.data)
+        mes_psar_negative = self._is_psar_negative(current_psar_mes, mes_data.data)
+        mym_psar_negative = self._is_psar_negative(current_psar_mym, mym_data.data)
+        mes_psar_positive = self._is_psar_positive(current_psar_mes, mes_data.data)
+        mym_psar_positive = self._is_psar_positive(current_psar_mym, mym_data.data)
         
         logger.info(f"MES PSAR negative: {mes_psar_negative}, MYM PSAR negative: {mym_psar_negative}")
         logger.info(f"MES PSAR positive: {mes_psar_positive}, MYM PSAR positive: {mym_psar_positive}")
@@ -180,7 +195,7 @@ class IchimokuBase(Strategy):
         """
 
         # Check for negative trend change (down to up) for SHORT scale-in conditions
-        down_trend_changed, down_candles_since_change = self.find_recent_downtrend_change(psar_mes, mes_data.data)
+        down_trend_changed, down_candles_since_change = self._find_recent_downtrend_change(psar_mes, mes_data.data)
         
         if mes_psar_positive and mym_psar_positive and kijun >= tenkan:
             self.params.number_of_contracts = 12
@@ -221,7 +236,7 @@ class IchimokuBase(Strategy):
         SHORT, we close. And vice versa.
         """
         # Check weekly candle exit conditions
-        is_weekly_candle, current_candle, prev_candle = self.get_weekly_candle(mes_data.data)
+        is_weekly_candle, current_candle, prev_candle = self._get_weekly_candle(mes_data.data)
         logger.info(f"Is weekly candle: {is_weekly_candle}")
         
         if is_weekly_candle and current_candle:
@@ -240,14 +255,11 @@ class IchimokuBase(Strategy):
         if entry_candle_exit:
             logger.warning('Entry candle validation failed - triggering exit')
             return 'EXIT'
-
-        # Update stop losses with current PSAR levels if we have open positions
-        stop_loss_updates = self._update_stop_losses(current_psar_mes, current_psar_mym)
             
         logger.info("No signals detected - staying in current position")
         return 'STAY'
     
-    def create_order(self, action: str):
+    def create_orders(self, action: str):
         mes_data = self.params.get_mes_data()
         mym_data = self.params.get_mym_data()
         
@@ -265,16 +277,12 @@ class IchimokuBase(Strategy):
         
         # Get the PSAR difference for calculating TP levels
         difference = getattr(self.params, 'psar_difference', 0)
-        
         qty = self.params.number_of_contracts
         
-        # Calculate TP quantities based on position type and contract count
         if action == 'LONG':
-            # For LONG: max 12 contracts, TP1 = first 6, TP2 = remaining 6
             tp1_qty = min(6, qty // 2) if qty <= 12 else 6
             tp2_qty = qty - tp1_qty
-        else:  # SHORT
-            # For SHORT: max 4 contracts, TP1 = first 2, TP2 = remaining 2
+        else:
             tp1_qty = min(2, qty // 2) if qty <= 4 else 2
             tp2_qty = qty - tp1_qty
 
@@ -283,9 +291,8 @@ class IchimokuBase(Strategy):
         logger.info(f"PSAR difference: {difference:.2f}")
 
         if action == 'LONG':
-            # Calculate levels
             entry_price = mes_psar_price
-            sl_price = mes_psar_price  # Stop at PSAR level
+            sl_price = mes_psar_price
             
             if difference > 0:
                 tp1_price = entry_price + (difference * 0.382)
@@ -388,19 +395,19 @@ class IchimokuBase(Strategy):
             logger.info(f"No order created for action: {action}")
             return None
 
-    def calculate_tenkan(self, data):
+    def _calculate_tenkan(self, data):
         last_5_days_mes = data[-5:]
         max_high_mes_5 = max(day['high'] for day in last_5_days_mes)
         min_low_mes_5 = min(day['low'] for day in last_5_days_mes)
         return 0.5 * (max_high_mes_5 + min_low_mes_5)
     
-    def calculate_kijun(self, data):
+    def _calculate_kijun(self, data):
         last_21_days_mes = data[-21:]
         max_high_mes_21 = max(day['high'] for day in last_21_days_mes)
         min_low_mes_21 = min(day['low'] for day in last_21_days_mes)
         return 0.5 * (max_high_mes_21 + min_low_mes_21)
 
-    def calculate_parabolic_sar(self, data, start_af=0.02, increment_af=0.02, max_af=0.20):
+    def _calculate_parabolic_sar(self, data, start_af=0.02, increment_af=0.02, max_af=0.20):
         """
         Calculate Parabolic SAR indicator
         Parameters:
@@ -482,17 +489,17 @@ class IchimokuBase(Strategy):
         
         return psar
 
-    def is_psar_positive(self, current_psar: float, data: list):
+    def _is_psar_positive(self, current_psar: float, data: list):
         # PSAR is positive when it's above the price (per specification)
         if current_psar > data[-1]['close']:
             return True
         else:
             return False
 
-    def is_psar_negative(self, current_psar: float, data: list):
-        return not self.is_psar_positive(current_psar, data)
+    def _is_psar_negative(self, current_psar: float, data: list):
+        return not self._is_psar_positive(current_psar, data)
 
-    def find_recent_trend_change(self, psar_data, historical_data, lookback=4):
+    def _find_recent_trend_change(self, psar_data, historical_data, lookback=4):
         """Check if there was a trend change from negative to positive in last 4 candles"""
         if len(psar_data) < lookback + 1:
             return False, lookback + 1
@@ -503,13 +510,13 @@ class IchimokuBase(Strategy):
             prev_psar = psar_data[-(i+1)]
             
             # Check if there was a change from negative to positive
-            if (self.is_psar_negative(prev_psar, [historical_data[-(i+1)]]) and 
-                self.is_psar_positive(current_psar, [historical_data[-i]])):
+            if (self._is_psar_negative(prev_psar, [historical_data[-(i+1)]]) and 
+                self._is_psar_positive(current_psar, [historical_data[-i]])):
                 return True, i
         
         return False, lookback + 1  # Return a value larger than lookback to indicate no recent change
 
-    def find_recent_downtrend_change(self, psar_data, historical_data, lookback=4):
+    def _find_recent_downtrend_change(self, psar_data, historical_data, lookback=4):
         """Check if there was a trend change from positive to negative in last 4 candles"""
         if len(psar_data) < lookback + 1:
             return False, lookback + 1
@@ -520,35 +527,35 @@ class IchimokuBase(Strategy):
             prev_psar = psar_data[-(i+1)]
             
             # Check if there was a change from positive to negative
-            if (self.is_psar_positive(prev_psar, [historical_data[-(i+1)]]) and 
-                self.is_psar_negative(current_psar, [historical_data[-i]])):
+            if (self._is_psar_positive(prev_psar, [historical_data[-(i+1)]]) and 
+                self._is_psar_negative(current_psar, [historical_data[-i]])):
                 return True, i
         
         return False, lookback + 1  # Return a value larger than lookback to indicate no recent change
 
-    def calculate_highest_high_since_change(self, historical_data, candles_since_change):
+    def _calculate_highest_high_since_change(self, historical_data, candles_since_change):
         """Calculate the highest high since the trend changed"""
         relevant_data = historical_data[-candles_since_change:]
         return max(day['high'] for day in relevant_data)
     
-    def calculate_lowest_low_since_change(self, historical_data, candles_since_change):
+    def _calculate_lowest_low_since_change(self, historical_data, candles_since_change):
         """Calculate the lowest low since the trend changed"""
         relevant_data = historical_data[-candles_since_change:]
         return min(day['low'] for day in relevant_data)
 
-    def get_trend_change_psars(self, psar_data, historical_data):
+    def _get_trend_change_psars(self, psar_data, historical_data):
         """Get the last PSAR of previous downtrend and first PSAR of current uptrend"""
         for i in range(1, len(psar_data)):
             current_psar = psar_data[-i]
             prev_psar = psar_data[-(i+1)]
             
-            if (self.is_psar_negative(prev_psar, [historical_data[-(i+1)]]) and 
-                self.is_psar_positive(current_psar, [historical_data[-i]])):
+            if (self._is_psar_negative(prev_psar, [historical_data[-(i+1)]]) and 
+                self._is_psar_positive(current_psar, [historical_data[-i]])):
                 return prev_psar, current_psar
         
         return None, None
 
-    def get_weekly_candle(self, data):
+    def _get_weekly_candle(self, data):
         """
         Get the weekly candle data if the current candle is the last one of the week (Friday)
         Returns:
@@ -578,9 +585,6 @@ class IchimokuBase(Strategy):
                           current_date.isocalendar()[1] != prev_date.isocalendar()[1])  # Different week
         
         return is_weekly_candle, current_candle, prev_candle
-
-    def calculate_number_of_contracts(self, take_profit, stop_loss):
-        return 12
 
     def _check_entry_candle_validation(self, mes_data, mym_data, psar_mes, psar_mym):
         """
@@ -612,7 +616,7 @@ class IchimokuBase(Strategy):
                                 return True
                             
                             # Check PSAR alignment - MYM should also be positive for LONG
-                            if self.is_psar_negative(psar_mym, [mym_data[-1]]):
+                            if self._is_psar_negative(psar_mym, [mym_data[-1]]):
                                 logger.warning(f"Entry candle validation: LONG position but MYM PSAR is negative - exit")
                                 return True
                         
@@ -624,50 +628,8 @@ class IchimokuBase(Strategy):
                                 return True
                             
                             # Check PSAR alignment - MYM should also be negative for SHORT
-                            if self.is_psar_positive(psar_mym, [mym_data[-1]]):
+                            if self._is_psar_positive(psar_mym, [mym_data[-1]]):
                                 logger.warning(f"Entry candle validation: SHORT position but MYM PSAR is positive - exit")
                                 return True
         
         return False
-
-    def _update_stop_losses(self, psar_mes, psar_mym):
-        """
-        Update stop loss levels with current PSAR levels if we have open positions
-        Returns a list of stop loss updates that need to be applied to broker orders
-        """
-        stop_loss_updates = []
-        
-        # Check if we have any open positions
-        if not self.params.positions:
-            return stop_loss_updates
-            
-        # Get current positions
-        for position in self.params.positions:
-            if abs(position['position']) > 0:  # We have an open position
-                contract_symbol = position['contract']['symbol']
-                
-                # Check if this is a LONG position
-                if position['position'] > 0:
-                    new_sl = psar_mes
-                    logger.info(f"LONG position in {contract_symbol}: updating SL to PSAR MES {new_sl:.2f}")
-                    stop_loss_updates.append({
-                        'symbol': contract_symbol,
-                        'position_type': 'LONG',
-                        'new_sl': new_sl,
-                        'quantity': position['position']
-                    })
-                    
-                # Check if this is a SHORT position
-                elif position['position'] < 0:
-                    new_sl = psar_mes  # For SHORT, SL is also based on MES PSAR
-                    logger.info(f"SHORT position in {contract_symbol}: updating SL to PSAR MES {new_sl:.2f}")
-                    stop_loss_updates.append({
-                        'symbol': contract_symbol,
-                        'position_type': 'SHORT',
-                        'new_sl': new_sl,
-                        'quantity': abs(position['position'])
-                    })
-        
-        # Store the updates in params so trader can access them
-        self.params.stop_loss_updates = stop_loss_updates
-        return stop_loss_updates
