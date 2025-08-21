@@ -11,10 +11,10 @@ class BacktestSnapshot:
         self.close = backtest_row_dict.get('Close', 0)
         self.prev_close = backtest_row_dict.get('Prev Close', 0)
         self.decision = backtest_row_dict.get('Decision', 'STAY')
-        self.entry_price = backtest_row_dict.get('EntryPrice', '')
-        self.exit_price = backtest_row_dict.get('ExitPrice', '')
-        self.pnl = backtest_row_dict.get('P/L', 0.0)
-        self.cumulative_pnl = backtest_row_dict.get('Cum. P/L', 0.0)
+        self.position = backtest_row_dict.get('Position', 0)
+        self.portfolio_value = backtest_row_dict.get('Portfolio Value', 0.0)
+        self.returns = backtest_row_dict.get('Returns', 0.0)
+        self.cumulative_returns = backtest_row_dict.get('Cumulative Returns', 0.0)
 
     def to_dict(self):
         """
@@ -28,20 +28,10 @@ class BacktestSnapshot:
             'Close': self.close,
             'Prev Close': self.prev_close,
             'Decision': self.decision,
-            'EntryPrice': self.entry_price,
-            'ExitPrice': self.exit_price,
-            'P/L': self.pnl,
-            'Cum. P/L': self.cumulative_pnl
+            'Position': self.position,
+            'Portfolio Value': self.portfolio_value,
+            'Returns': self.returns,
+            'Cumulative Returns': self.cumulative_returns
         }
     
-    def has_entry(self):
-        """Check if this snapshot contains an entry"""
-        return self.entry_price != '' and self.entry_price != 0
-    
-    def has_exit(self):
-        """Check if this snapshot contains an exit"""
-        return self.exit_price != '' and self.exit_price != 0
-    
-    def is_profitable(self):
-        """Check if this trade was profitable"""
-        return self.pnl > 0 if self.pnl != 0 else False
+    # Legacy helper methods removed (has_entry, has_exit, is_profitable) as we no longer track individual trades here

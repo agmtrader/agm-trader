@@ -1,4 +1,4 @@
-from src.lib.params import BaseStrategyParams, IchimokuBaseParams
+from src.lib.params import BaseStrategyParams, IchimokuBaseParams, SMACrossoverParams
 from abc import ABC, abstractmethod
 from ib_insync import *
 import numpy as np 
@@ -92,12 +92,13 @@ class IchimokuBase(Strategy):
                 logger.error("PSAR calculation returned empty arrays")
                 return 'STAY'
                 
-            self.params.psar_mes = psar_mes.tolist()
-            self.params.psar_mym = psar_mym.tolist()
+            for contract_data in self.params.contracts:
+                contract_data.indicators['psar'] = self._calculate_parabolic_sar(contract_data.data).tolist()
 
             # Extract current PSAR
             current_psar_mes = psar_mes[-1]
             current_psar_mym = psar_mym[-1]
+            
             logger.info(f"Current PSAR MES: {current_psar_mes:.2f}, Current PSAR MYM: {current_psar_mym:.2f}")
         except Exception as e:
             logger.error(f"Error calculating PSAR: {str(e)}")
@@ -272,8 +273,8 @@ class IchimokuBase(Strategy):
             return None
 
         # Get entry prices from PSAR
-        mes_psar_price = self.params.psar_mes[-1] if self.params.psar_mes else mes_data.get_latest_price()
-        mym_psar_price = self.params.psar_mym[-1] if self.params.psar_mym else mym_data.get_latest_price()
+        mes_psar_price = self.params.contracts[0].indicators['psar'][-1] if self.params.contracts[0].indicators['psar'] else mes_data.get_latest_price()
+        mym_psar_price = self.params.contracts[1].indicators['psar'][-1] if self.params.contracts[1].indicators['psar'] else mym_data.get_latest_price()
         
         # Get the PSAR difference for calculating TP levels
         difference = getattr(self.params, 'psar_difference', 0)
@@ -633,3 +634,94 @@ class IchimokuBase(Strategy):
                                 return True
         
         return False
+
+class SMACrossover(Strategy):
+    """Simple strategy that generates LONG/SHORT signals based on a 200-period SMA crossover"""
+
+    def __init__(self, initialParams: SMACrossoverParams):
+        super().__init__(initialParams)
+        self.name = 'SMA Crossover'
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            **super().to_dict()
+        }
+
+    def refresh_params(self, data_manager):
+        logger.announcement("Refreshing strategy params...", 'info')
+        aapl_contract_data = self.params.get_aapl_data()
+        if aapl_contract_data:
+            aapl_contract_data.data = data_manager.get_historical_data(aapl_contract_data.contract)
+        self.params.open_orders = data_manager.get_open_orders()
+        self.params.executed_orders = data_manager.get_completed_orders()
+        self.params.positions = data_manager.get_positions()
+        logger.success("Strategy params refreshed")
+
+    def run(self):
+        logger.announcement('Executing strategy...', 'info')
+        aapl_data = self.params.get_aapl_data()
+        if not aapl_data or not aapl_data.has_data():
+            logger.error('No AAPL data available')
+            return 'STAY'
+
+        if len(aapl_data.data) < 201:
+            logger.warning('Not enough data for calculation')
+            return 'STAY'
+        
+        # Calculate 200-period Simple Moving Average (SMA)
+        window = 200
+        sma_values = [
+            np.mean([d['close'] for d in aapl_data.data[max(0, i - window):i]])
+            for i in range(1, len(aapl_data.data) + 1)
+        ]
+
+        # Save historical SMA values to indicators
+        for contract_data in self.params.contracts:
+            contract_data.indicators['sma'] = sma_values
+
+        # Get the latest SMA value
+        sma = sma_values[-1]
+        self.params.sma = sma
+        prev_sma = sma_values[-2]
+
+        latest_close = aapl_data.data[-1]['close']
+        prev_close = aapl_data.data[-2]['close']
+
+        logger.info(
+            f"Latest close: {latest_close:.2f}, Prev close: {prev_close:.2f}, "
+            f"SMA: {sma:.2f}, Prev SMA: {prev_sma:.2f}"
+        )
+
+        if prev_close < prev_sma and latest_close > sma:
+            logger.warning('Bullish crossover detected -> LONG')
+            return 'LONG'
+        elif prev_close > prev_sma and latest_close < sma:
+            logger.warning('Bearish crossover detected -> SHORT')
+            return 'SHORT'
+
+        logger.info('No crossover detected -> STAY')
+        return 'STAY'
+
+    def create_orders(self, action: str):
+        aapl_data = self.params.get_aapl_data()
+        if not aapl_data or not aapl_data.has_data():
+            logger.error('No AAPL data available for order creation')
+            return None
+
+        qty = 10  # number of shares
+        entry_price = aapl_data.get_latest_price()
+        if entry_price is None:
+            logger.error('Could not determine entry price')
+            return None
+
+        if action == 'LONG':
+            order = MarketOrder(action='BUY', totalQuantity=qty)
+        elif action == 'SHORT':
+            order = MarketOrder(action='SELL', totalQuantity=qty)
+        else:
+            logger.info(f'No order created for action: {action}')
+            return None
+
+        logger.info(f'Creating {action} market order for {qty} AAPL shares at approx {entry_price:.2f}')
+        return [order]

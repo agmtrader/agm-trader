@@ -9,6 +9,7 @@ class ContractData:
     def __init__(self, contract: Contract, data: Optional[List[Dict[str, Any]]] = None):
         self.contract = contract
         self.data = data or []
+        self.indicators = {}
         
     def has_data(self) -> bool:
         """Check if historical data is available"""
@@ -47,6 +48,7 @@ class ContractData:
             'contract': contract_info,
             'data': formatted_data,
             'symbol': self.get_symbol(),
+            'indicators': self.indicators,
         }
 
 class BaseStrategyParams(ABC):
@@ -71,6 +73,7 @@ class BaseStrategyParams(ABC):
             'positions': self.positions,
         }
 
+
 class IchimokuBaseParams(BaseStrategyParams):
     def __init__(self):
         super().__init__()
@@ -92,8 +95,6 @@ class IchimokuBaseParams(BaseStrategyParams):
         self.tenkan: float = 0
         self.kijun: float = 0
         self.number_of_contracts: int = 0
-        self.psar_mes: List[float] = []
-        self.psar_mym: List[float] = []
         
     def get_mes_data(self) -> Optional[ContractData]:
         """Get MES contract data"""
@@ -108,10 +109,29 @@ class IchimokuBaseParams(BaseStrategyParams):
             'tenkan': self.tenkan,
             'kijun': self.kijun,
             'number_of_contracts': self.number_of_contracts,
-            'psar_mes': self.psar_mes,
-            'psar_mym': self.psar_mym,
         }
         return {
             **ichimoku_dict,
             **super().to_dict()
+        }
+
+class SMACrossoverParams(BaseStrategyParams):
+    """Parameters container for the SMA crossover strategy"""
+
+    def __init__(self):
+        super().__init__()
+
+        aapl_contract = Stock('AAPL', 'SMART', 'USD')
+        self.contracts = [ContractData(aapl_contract)]
+
+        self.sma: float = 0
+
+    def get_aapl_data(self) -> Optional[ContractData]:
+        """Return contract data object"""
+        return self.get_contract_by_symbol('AAPL')
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'sma': self.sma,
+            **super().to_dict(),
         }
