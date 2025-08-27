@@ -1,10 +1,13 @@
+from abc import ABC, abstractmethod
+from src.lib.params import BaseStrategyParams
 from src.lib.params import BaseStrategyParams, IchimokuBaseParams, SMACrossoverParams
 from abc import ABC, abstractmethod
 from ib_insync import *
 import numpy as np 
 from src.utils.logger import logger
 from datetime import datetime
-from src.components.data_manager import DataManager
+from src.lib.backtest import TradeSnapshot
+import pandas as pd
 
 class Strategy(ABC):
     def __init__(self, initialParams: BaseStrategyParams):
@@ -21,6 +24,10 @@ class Strategy(ABC):
     @abstractmethod
     def refresh_params(self, data_manager):
         """Refresh internal parameters using the supplied DataManager instance."""
+        pass
+
+    @abstractmethod
+    def backtest(self):
         pass
 
     def to_dict(self):
@@ -60,15 +67,15 @@ class IchimokuBase(Strategy):
             logger.error("MES or MYM contract data not found")
             return 'STAY'
             
-        if not mes_data.has_data() or not mym_data.has_data():
+        if not mes_data.data or not mym_data.data:
             logger.error("Historical data not available for MES or MYM")
             return 'STAY'
 
         logger.info(f"MES data points: {len(mes_data.data)}, MYM data points: {len(mym_data.data)}")
         
         # Check if we have valid price data
-        mes_price = mes_data.get_latest_price()
-        mym_price = mym_data.get_latest_price()
+        mes_price = mes_data.data[-1]['close']
+        mym_price = mym_data.data[-1]['close']
         
         if mes_price is None or mym_price is None:
             logger.error("Latest price data is missing")
@@ -264,17 +271,17 @@ class IchimokuBase(Strategy):
         mes_data = self.params.get_mes_data()
         mym_data = self.params.get_mym_data()
         
-        if not mes_data or not mes_data.has_data():
+        if not mes_data or not mes_data.data:
             logger.error("No MES data available for order creation")
             return None
         
-        if not mym_data or not mym_data.has_data():
+        if not mym_data or not mym_data.data:
             logger.error("No MYM data available for order creation")
             return None
 
         # Get entry prices from PSAR
-        mes_psar_price = self.params.contracts[0].indicators['psar'][-1] if self.params.contracts[0].indicators['psar'] else mes_data.get_latest_price()
-        mym_psar_price = self.params.contracts[1].indicators['psar'][-1] if self.params.contracts[1].indicators['psar'] else mym_data.get_latest_price()
+        mes_psar_price = self.params.contracts[0].indicators['psar'][-1] if self.params.contracts[0].indicators['psar'] else mes_data.data[-1]['close']
+        mym_psar_price = self.params.contracts[1].indicators['psar'][-1] if self.params.contracts[1].indicators['psar'] else mym_data.data[-1]['close']
         
         # Get the PSAR difference for calculating TP levels
         difference = getattr(self.params, 'psar_difference', 0)
@@ -395,6 +402,9 @@ class IchimokuBase(Strategy):
         else:
             logger.info(f"No order created for action: {action}")
             return None
+
+    def backtest(self):
+        pass
 
     def _calculate_tenkan(self, data):
         last_5_days_mes = data[-5:]
@@ -650,67 +660,135 @@ class SMACrossover(Strategy):
 
     def refresh_params(self, data_manager):
         logger.announcement("Refreshing strategy params...", 'info')
-        aapl_contract_data = self.params.get_aapl_data()
-        if aapl_contract_data:
-            aapl_contract_data.data = data_manager.get_historical_data(aapl_contract_data.contract)
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
+        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='5 Y', bar_size='1 day')
         logger.success("Strategy params refreshed")
 
     def run(self):
+
         logger.announcement('Executing strategy...', 'info')
-        aapl_data = self.params.get_aapl_data()
-        if not aapl_data or not aapl_data.has_data():
-            logger.error('No AAPL data available')
+        main_contract = self.params.contracts[0]
+
+        if not main_contract:
+            logger.error('No data available')
             return 'STAY'
 
-        if len(aapl_data.data) < 201:
+        if len(main_contract.data) < 201:
             logger.warning('Not enough data for calculation')
             return 'STAY'
         
         # Calculate 200-period Simple Moving Average (SMA)
         window = 200
         sma_values = [
-            np.mean([d['close'] for d in aapl_data.data[max(0, i - window):i]])
-            for i in range(1, len(aapl_data.data) + 1)
+            np.mean([d['close'] for d in main_contract.data[max(0, i - window):i]])
+            for i in range(1, len(main_contract.data) + 1)
         ]
 
         # Save historical SMA values to indicators
-        for contract_data in self.params.contracts:
-            contract_data.indicators['sma'] = sma_values
+        main_contract.indicators['sma'] = sma_values
 
         # Get the latest SMA value
         sma = sma_values[-1]
-        self.params.sma = sma
+        self.params.indicators['sma'] = sma
         prev_sma = sma_values[-2]
 
-        latest_close = aapl_data.data[-1]['close']
-        prev_close = aapl_data.data[-2]['close']
+        latest_close = main_contract.data[-1]['close']
+        prev_close = main_contract.data[-2]['close']
 
         logger.info(
             f"Latest close: {latest_close:.2f}, Prev close: {prev_close:.2f}, "
             f"SMA: {sma:.2f}, Prev SMA: {prev_sma:.2f}"
         )
 
-        if prev_close < prev_sma and latest_close > sma:
+        # Entry condition: price crosses above SMA (bullish crossover)
+        if prev_close <= prev_sma and latest_close > sma:
             logger.warning('Bullish crossover detected -> LONG')
             return 'LONG'
-        elif prev_close > prev_sma and latest_close < sma:
-            logger.warning('Bearish crossover detected -> SHORT')
-            return 'SHORT'
+
+        # Exit condition: price crosses below SMA (bearish cross-under)
+        elif prev_close >= prev_sma and latest_close < sma:
+            logger.warning('Bearish cross-under detected -> EXIT')
+            return 'EXIT'
 
         logger.info('No crossover detected -> STAY')
         return 'STAY'
 
+    def backtest(self):
+        """
+        """
+
+        self.params.open_orders = []
+        self.params.executed_orders = []
+        self.params.positions = []
+
+        full_historical_data = self.params.contracts[0].data
+        logger.info(f"Backtest will replay {len(full_historical_data)} candles.")
+
+        open_trade = None
+        trades = []
+
+        # Iterate through each candle and progressively grow the data set that the strategy can see.
+        for idx, candle in enumerate(full_historical_data):
+
+            # The SMA-200 requires at least 201 price points (previous close + current close).
+            # Skip the initial period where we do not have enough data to evaluate a signal.
+            if idx < 200:
+                continue
+
+            # Provide the strategy only with data **up to** the current index so that run() "sees"
+            # market information as it would have been available on that day.
+            self.params.contracts[0].data = full_historical_data[: idx + 1]
+
+            # Execute the strategy on this truncated data set
+            decision = self.run()
+
+            current_date = candle.get('date')
+            current_close = candle.get('close')
+
+            qty = getattr(self.params, 'number_of_contracts', 1)
+
+            if decision in ("LONG", "SHORT") and open_trade is None:
+                open_trade = TradeSnapshot(
+                    side=decision,
+                    qty=qty,
+                    entry_date=current_date,
+                    entry_price=current_close,
+                )
+                logger.warning(
+                    f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)"
+                )
+
+            elif decision == "EXIT" and open_trade is not None:
+                open_trade.close(current_date, current_close, "EXIT_SIGNAL")
+                trades.append(open_trade)
+                logger.info(f"Closed position on {current_date} @ {current_close}")
+                open_trade = None
+
+        # Close any remaining open position at the end of the data set
+        if open_trade is not None:
+            open_trade.close(
+                full_historical_data[-1].get('date'),
+                full_historical_data[-1].get('close'),
+                "END_OF_DATA",
+            )
+            trades.append(open_trade)
+
+        logger.success(f"Backtest generated {len(trades)} trades.")
+        return trades
+
     def create_orders(self, action: str):
-        aapl_data = self.params.get_aapl_data()
-        if not aapl_data or not aapl_data.has_data():
-            logger.error('No AAPL data available for order creation')
+        
+        main_contract = self.params.contracts[0]
+        if not main_contract:
+            logger.error('No data available for order creation')
             return None
+        
+        main_contract_data = main_contract.data[-1]
 
         qty = 10  # number of shares
-        entry_price = aapl_data.get_latest_price()
+        entry_price = main_contract_data.get('close')
         if entry_price is None:
             logger.error('Could not determine entry price')
             return None

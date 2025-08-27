@@ -1,7 +1,7 @@
 from flask import request
 from flask_socketio import emit
 from src.utils.logger import logger
-from src.components.trader import Trader, TraderSnapshot
+from src.components.trader import Trader
 
 trader = Trader()
 
@@ -27,7 +27,7 @@ def deploy_main_routes(socketio):
     def ping():
         try:
             logger.announcement("Ping received.", 'info')
-            emit('pong', TraderSnapshot(trader).to_dict(), broadcast=True)
+            emit('pong', trader.to_dict(), broadcast=True)
         except Exception as e:
             logger.error(f"Error pinging Trader: {str(e)}")
             emit('pong', str(e), broadcast=True)

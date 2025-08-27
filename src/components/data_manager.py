@@ -5,17 +5,16 @@ import math
 import time
 
 class DataManager:
-    """Encapsulates read-only data access to IBKR. All API calls are executed through
-    the event loop managed by the provided ConnectionManager instance."""
+    """
+    Encapsulates read-only data access to IBKR. All API calls are executed through
+    the event loop managed by the provided ConnectionManager instance.
+    """
 
     def __init__(self, conn: ConnectionManager):
         self.conn = conn
         self.ib = conn.ib
 
-    # ------------------------------------------------------------------
-    # Historical bars
-    # ------------------------------------------------------------------
-    def get_historical_data(self, contract: Contract, duration: str = '1 Y', bar_size: str = '1 day'):
+    def get_historical_data(self, contract: Contract, duration: str = '5 Y', bar_size: str = '1 day'):
         logger.info(f"Getting historical data for {contract.symbol}…")
         if not self.conn.is_connected():
             logger.warning("No connection when getting historical data. Attempting reconnection…")
@@ -43,9 +42,6 @@ class DataManager:
                     logger.error(f"Error after reconnection: {str(retry_e)}")
             raise
 
-    # ------------------------------------------------------------------
-    # Latest price
-    # ------------------------------------------------------------------
     def get_latest_price(self, contract: Contract):
         logger.info("Getting latest price…")
         if not self.conn.is_connected():
@@ -69,9 +65,6 @@ class DataManager:
             logger.error(f"Error getting latest price: {str(e)}")
             raise
 
-    # ------------------------------------------------------------------
-    # Account summary
-    # ------------------------------------------------------------------
     def get_account_summary(self):
         logger.info("Getting account summary…")
         if not self.conn.is_connected():
@@ -97,9 +90,6 @@ class DataManager:
             logger.error(f"Error getting account summary: {str(e)}")
             raise
 
-    # ------------------------------------------------------------------
-    # Positions
-    # ------------------------------------------------------------------
     def get_positions(self):
         logger.info("Getting positions…")
         if not self.conn.is_connected():
@@ -132,9 +122,6 @@ class DataManager:
             logger.error(f"Error getting positions: {str(e)}")
             raise
 
-    # ------------------------------------------------------------------
-    # Completed orders
-    # ------------------------------------------------------------------
     def get_completed_orders(self):
         logger.info("Getting completed orders…")
         if not self.conn.is_connected():
@@ -175,9 +162,6 @@ class DataManager:
             logger.error(f"Error getting completed orders: {str(e)}")
             raise
 
-    # ------------------------------------------------------------------
-    # Open orders
-    # ------------------------------------------------------------------
     def get_open_orders(self):
         logger.info("Getting open orders…")
         if not self.conn.is_connected():

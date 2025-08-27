@@ -31,9 +31,6 @@ class ConnectionManager:
         self.start_connection_monitor()
         nest_asyncio.apply()
 
-    # ------------------------------------------------------------------
-    # Async event-loop helpers
-    # ------------------------------------------------------------------
     def _run_event_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -51,9 +48,6 @@ class ConnectionManager:
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
 
-    # ------------------------------------------------------------------
-    # Connection helpers
-    # ------------------------------------------------------------------
     def is_connected(self):
         try:
             return self.ib.isConnected()
@@ -93,9 +87,6 @@ class ConnectionManager:
             time.sleep(CONNECTION_CHECK_INTERVAL)
         logger.info("Connection monitor worker stopped")
 
-    # ------------------------------------------------------------------
-    # Connect / disconnect / reconnect
-    # ------------------------------------------------------------------
     def connect(self):
         logger.announcement("Connecting to IBKR...", 'info')
         try:

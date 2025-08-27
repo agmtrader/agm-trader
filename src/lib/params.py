@@ -10,21 +10,7 @@ class ContractData:
         self.contract = contract
         self.data = data or []
         self.indicators = {}
-        
-    def has_data(self) -> bool:
-        """Check if historical data is available"""
-        return len(self.data) > 0
-    
-    def get_latest_price(self) -> Optional[float]:
-        """Get the latest close price from historical data"""
-        if self.has_data():
-            return self.data[-1].get('close')
-        return None
-    
-    def get_symbol(self) -> str:
-        """Get the contract symbol"""
-        return self.contract.symbol
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""
         # Convert datetime columns to strings in data
@@ -47,7 +33,7 @@ class ContractData:
         return {
             'contract': contract_info,
             'data': formatted_data,
-            'symbol': self.get_symbol(),
+            'symbol': self.contract.symbol,
             'indicators': self.indicators,
         }
 
@@ -57,11 +43,12 @@ class BaseStrategyParams(ABC):
         self.open_orders: List[Dict[str, Any]] = []
         self.executed_orders: List[Dict[str, Any]] = []
         self.positions: List[Any] = []
+        self.indicators: Dict[str, Any] = {}
 
-    def get_contract_by_symbol(self, symbol: str) -> Optional[ContractData]:
+    def get_data_by_symbol(self, symbol: str) -> Optional[ContractData]:
         """Get contract data by symbol"""
         for contract_data in self.contracts:
-            if contract_data.get_symbol() == symbol:
+            if contract_data.contract.symbol == symbol:
                 return contract_data
         return None
 
@@ -71,18 +58,15 @@ class BaseStrategyParams(ABC):
             'open_orders': self.open_orders,
             'executed_orders': self.executed_orders,
             'positions': self.positions,
+            'indicators': self.indicators,
         }
-
 
 class IchimokuBaseParams(BaseStrategyParams):
     def __init__(self):
         super().__init__()
-        # Create contract data objects for MES and MYM (using front month contracts)
-        # Get current date to determine appropriate contract month
-        current_date = datetime.datetime.now()
-        
+
         # For simplicity, use March 2025 contracts (you may want to implement auto-rolling logic)
-        contract_month = '202509'  # June 2025
+        contract_month = '202509'
         
         mes_contract = Future('MES', contract_month, 'CME')
         mym_contract = Future('MYM', contract_month, 'CBOT')
@@ -98,11 +82,11 @@ class IchimokuBaseParams(BaseStrategyParams):
         
     def get_mes_data(self) -> Optional[ContractData]:
         """Get MES contract data"""
-        return self.get_contract_by_symbol('MES')
+        return self.get_data_by_symbol('MES')
     
     def get_mym_data(self) -> Optional[ContractData]:
         """Get MYM contract data"""
-        return self.get_contract_by_symbol('MYM')
+        return self.get_data_by_symbol('MYM')
         
     def to_dict(self) -> Dict[str, Any]:
         ichimoku_dict = {
@@ -120,18 +104,14 @@ class SMACrossoverParams(BaseStrategyParams):
 
     def __init__(self):
         super().__init__()
-
         aapl_contract = Stock('AAPL', 'SMART', 'USD')
         self.contracts = [ContractData(aapl_contract)]
-
-        self.sma: float = 0
-
-    def get_aapl_data(self) -> Optional[ContractData]:
-        """Return contract data object"""
-        return self.get_contract_by_symbol('AAPL')
+        self.indicators = {
+            'sma': 0
+        }
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'sma': self.sma,
+            'indicators': self.indicators,
             **super().to_dict(),
         }
