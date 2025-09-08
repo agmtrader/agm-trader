@@ -97,7 +97,7 @@ class Trader:
                 order = self.strategy.create_orders(self.decision)
                 if order:
                     # TODO: Uncomment the line below when ready for live trading
-                    #self.place_order(order)
+                    self.place_order(order)
                     logger.warning("Order placement is currently disabled for safety")
                     logger.announcement(f"Order placed: {order}", 'success')
                     
