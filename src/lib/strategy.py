@@ -763,6 +763,8 @@ class SMACrossover(Strategy):
     def __init__(self, initialParams: SMACrossoverParams):
         super().__init__(initialParams)
         self.name = 'SMA Crossover'
+        self.timeframe = '1 hour'
+        self.timeframe_seconds = 3600
 
     def to_dict(self):
         return {
