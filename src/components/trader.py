@@ -5,6 +5,8 @@ import nest_asyncio
 from datetime import datetime
 import time
 
+import pandas as pd
+
 from src.components.connection_manager import ConnectionManager
 from src.components.data_manager import DataManager
 from src.components.order_manager import OrderManager
@@ -12,11 +14,10 @@ from src.components.order_manager import OrderManager
 from src.lib.strategy import IchimokuBase, SMACrossover
 from src.lib.params import IchimokuBaseParams, SMACrossoverParams
 
-SLEEP_TIME = 86400
-
 class Trader:
 
     def __init__(self):
+        
         self.conn = ConnectionManager()
         self.data = DataManager(self.conn)
         self.order_mgr = OrderManager(self.conn)
@@ -25,14 +26,16 @@ class Trader:
         self.strategy = None
         self.decision = None
         self.account_summary = None
-        self.backtest = []
+
+        self.trades = []
+        self.history = []
 
         self.conn.connect()
 
         try:
             self.conn.start_connection_monitor()
 
-            self.trading_thread = threading.Thread(target=self.run, args=('SMACROSSOVER',))
+            self.trading_thread = threading.Thread(target=self.run, args=('ICHIMOKU_BASE',))
             self.trading_thread.start()
             nest_asyncio.apply()
 
@@ -54,9 +57,21 @@ class Trader:
         self.order_mgr.close_all_positions()
         self.strategy.refresh_params(self.data)
 
-        self.backtest = self.strategy.backtest()
+        self.trades, decisions = self.strategy.backtest()
+
+        for d in decisions:
+            self.history.append({
+                'current_time': d.get('date'),
+                'strategy': self.strategy.to_dict() if self.strategy else {},
+                'decision': d.get('decision'),
+                'account_summary': self.account_summary,
+            })
+
+        trades_df = pd.DataFrame([trade.to_dict() for trade in self.trades])
+        trades_df.to_csv('backtest.csv', index=False)
 
         self.running = True
+
         logger.announcement(f"Running strategy: {self.strategy.name}", 'info')        
 
         try:
@@ -90,7 +105,10 @@ class Trader:
                 self.account_summary = self.data.get_account_summary()
                 self.strategy.refresh_params(self.data)
 
-                time.sleep(SLEEP_TIME)
+                # Record a snapshot of the current state every timeframe
+                self.history.append(self.to_dict())
+
+                time.sleep(self.strategy.timeframe_seconds)
                 
         except Exception as e:
             logger.error(f"Error running strategy: {str(e)}")

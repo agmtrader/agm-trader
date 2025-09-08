@@ -12,6 +12,8 @@ import pandas as pd
 class Strategy(ABC):
     def __init__(self, initialParams: BaseStrategyParams):
         self.params = initialParams
+        self.timeframe = '1 day'
+        self.timeframe_seconds = 86400
     
     @abstractmethod
     def run(self):
@@ -35,6 +37,13 @@ class Strategy(ABC):
             'params': self.params.to_dict()
         }
 
+    def has_open_position(self):
+        """Return True if any open position is currently held (long or short)."""
+        for pos in getattr(self.params, 'positions', []):
+            if abs(pos.get('position', 0)) > 0:
+                return True
+        return False
+
 class IchimokuBase(Strategy):
     
     def __init__(self, initialParams: IchimokuBaseParams):
@@ -50,223 +59,329 @@ class IchimokuBase(Strategy):
     def refresh_params(self, data_manager):
         logger.announcement("Refreshing strategy params...", 'info')
         for contract_data in self.params.contracts:
-            contract_data.data = data_manager.get_historical_data(contract_data.contract)
+            contract_data.data = data_manager.get_historical_data(contract_data.contract, bar_size=self.timeframe)
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
         logger.success("Successfully refreshed strategy params.")
 
     def run(self):
-        logger.announcement(f'Executing strategy...', 'info')
+        """Execute the Ichimoku-Base strategy decision engine.
 
-        # Get contract data
-        mes_data = self.params.get_mes_data()
-        mym_data = self.params.get_mym_data()
-        
-        if not mes_data or not mym_data:
-            logger.error("MES or MYM contract data not found")
-            return 'STAY'
-            
-        if not mes_data.data or not mym_data.data:
-            logger.error("Historical data not available for MES or MYM")
-            return 'STAY'
+        The logic is a Python translation of the TradingView Pine-script shared by the
+        user.  Each call analyses the **latest** candle of the MES contract (primary)
+        and, where required, information from the MYM contract (secondary) to decide
+        whether to go **LONG**, **SHORT**, **EXIT** or **STAY**.
 
-        logger.info(f"MES data points: {len(mes_data.data)}, MYM data points: {len(mym_data.data)}")
-        
-        # Check if we have valid price data
-        mes_price = mes_data.data[-1]['close']
-        mym_price = mym_data.data[-1]['close']
-        
-        if mes_price is None or mym_price is None:
-            logger.error("Latest price data is missing")
-            return 'STAY'
-            
-        logger.info(f"Latest MES price: {mes_price:.2f}, Latest MYM price: {mym_price:.2f}")
-
-        # Calculate Tenkan and Kijun
-        tenkan = self._calculate_tenkan(mes_data.data)
-        kijun = self._calculate_kijun(mes_data.data)
-        self.params.tenkan = tenkan
-        self.params.kijun = kijun
-        logger.info(f"Tenkan: {tenkan:.2f}, Kijun: {kijun:.2f}")
-
-        # Calculate current PSAR
-        try:
-            psar_mes = self._calculate_parabolic_sar(mes_data.data)
-            psar_mym = self._calculate_parabolic_sar(mym_data.data)
-            
-            if len(psar_mes) == 0 or len(psar_mym) == 0:
-                logger.error("PSAR calculation returned empty arrays")
-                return 'STAY'
-                
-            for contract_data in self.params.contracts:
-                contract_data.indicators['psar'] = self._calculate_parabolic_sar(contract_data.data).tolist()
-
-            # Extract current PSAR
-            current_psar_mes = psar_mes[-1]
-            current_psar_mym = psar_mym[-1]
-            
-            logger.info(f"Current PSAR MES: {current_psar_mes:.2f}, Current PSAR MYM: {current_psar_mym:.2f}")
-        except Exception as e:
-            logger.error(f"Error calculating PSAR: {str(e)}")
-            return 'STAY'
-
-        # Has it been 4 candles or less since the psar changed from negative to positive?
-        trend_changed, candles_since_change = self._find_recent_trend_change(psar_mes, mes_data.data)
-        logger.info(f"Trend changed: {trend_changed}, Candles since change: {candles_since_change}")
-
-        # Calculate highest high and lowest low since the trend change
-        highest_high = None
-        lowest_low = None
-        last_down_psar = None
-        first_up_psar = None
-        difference = 0
-        
-        if trend_changed and candles_since_change is not None:
-            # Get last psar of previous downtrend and first psar of current uptrend
-            last_down_psar, first_up_psar = self._get_trend_change_psars(psar_mes, mes_data.data)
-
-            # Calculate difference properly with null checks
-            if last_down_psar is not None and first_up_psar is not None:
-                difference = abs(last_down_psar - first_up_psar)
-            else:
-                difference = 0
-
-            highest_high = self._calculate_highest_high_since_change(mes_data.data, candles_since_change)
-            lowest_low = self._calculate_lowest_low_since_change(mes_data.data, candles_since_change)
-            logger.info(f"Highest high since change: {highest_high}, Lowest low since change: {lowest_low}")
-            logger.info(f"Last down PSAR: {last_down_psar}, First up PSAR: {first_up_psar}")
-            logger.info(f"PSAR difference: {difference:.2f}")
-        
-        """
-        BUY SIGNALS:
-
-        1. If PSAR MES is negative and PSAR MYM is negative, put a limit buy order at the PSAR MES price
-        (to take the trend change). Open 12 contracts in this occasion.
-
-        2. If the current candle is in the 4 first candles of the positive trend started by the PSAR,
-        and if PSAR MES is positive and PSAR MYM is positive and the highest high since the positive trend started by the PSAR
-        is less than 61.8% of the difference between the last PSAR of the previous downtrend and the first PSAR of the current uptrend,
-        we buy the following number of contracts:
-        - If close of the candle where this happens is less than 38.2% of said difference,
-        we buy 12 contracts
-        - If close of the candle where this happens is greater than 38.2% of said difference,
-        we buy 6 contracts only (because we will have already exceeded the Take Profit 1)
+        Notes
+        -----
+        1. This method is intentionally *stateless* – every invocation recomputes the
+           required indicators from scratch based on the historical data currently
+           loaded in ``self.params``.  This avoids the complexity of persisting
+           auxiliary variables (bars_since_flip, first_psar, …) between calls while
+           still replicating the behaviour of the Pine-script, which also looks back
+           only a few candles (≤4).
+        2. All helper methods used here are already implemented in this class:
+           `_calculate_parabolic_sar`, `_calculate_tenkan`, `_calculate_kijun`,
+           `_find_recent_trend_change`, `_find_recent_downtrend_change`, …
         """
 
-        # Check PSAR conditions
-        mes_psar_negative = self._is_psar_negative(current_psar_mes, mes_data.data)
-        mym_psar_negative = self._is_psar_negative(current_psar_mym, mym_data.data)
-        mes_psar_positive = self._is_psar_positive(current_psar_mes, mes_data.data)
-        mym_psar_positive = self._is_psar_positive(current_psar_mym, mym_data.data)
-        
-        logger.info(f"MES PSAR negative: {mes_psar_negative}, MYM PSAR negative: {mym_psar_negative}")
-        logger.info(f"MES PSAR positive: {mes_psar_positive}, MYM PSAR positive: {mym_psar_positive}")
+        # Convenience aliases ────────────────────────────────────────────────────
+        mes_contract = self.params.get_mes_data()
+        mym_contract = self.params.get_mym_data()
 
-        if mes_psar_negative and mym_psar_negative:
-            self.params.number_of_contracts = 12
-            self.params.psar_difference = 0
-            logger.warning(f'Buy signal detected. Negative PSAR. 12 contracts')
-            return 'LONG'
-        
-        elif mes_psar_positive and mym_psar_positive and trend_changed and candles_since_change is not None and candles_since_change <= 4:
-            if difference > 0 and highest_high and highest_high < (difference * 0.618):
-                # Get the entry candle (the one from candles_since_change ago)
-                entry_candle = mes_data.data[-candles_since_change]
-                entry_close = entry_candle['close']
-                
-                # Compare entry candle close to thresholds, not highest_high
-                if entry_close < (difference * 0.382):
-                    self.params.number_of_contracts = 12
-                    logger.warning(f'Buy signal detected. Positive PSAR. 12 contracts (entry close < 38.2%)')
-                else:
-                    self.params.number_of_contracts = 6
-                    logger.warning(f'Buy signal detected. Positive PSAR. 6 contracts (entry close >= 38.2%)')
-                
-                self.params.psar_difference = difference  # Store for later use in order creation
-                return 'LONG'
-            
-        """
-        SELLSHORT SIGNALS:
+        if not (mes_contract and mym_contract):
+            logger.error("Missing MES or MYM contract data – staying idle")
+            return "STAY"
 
-        1. If PSAR MES + and PSAR MYM +, and Kijun >= Tenkan, put a limit sell order at the PSAR MES price
-        (to take the trend change). Open 12 contracts in this occasion.
+        mes_data = mes_contract.data
+        mym_data = mym_contract.data
 
-        2. If the current candle is between the 4 first candles of the negative trend started by the PSAR,
-        and if PSAR MES - and PSAR MYM -, and Kijun >= Tenkan, and the lowest low since the negative trend started by the PSAR
-        is greater than 61.8% of the difference between the last PSAR of the previous uptrend and the first PSAR of the current downtrend,
-        we sell the following number of contracts:
-        - If close of the candle where this happens is greater than 38.2% of said difference,
-        we sell 4 contracts
-        - If close of the candle where this happens is less than 38.2% of said difference,
-        we sell 2 contracts only (because we will have already exceeded the Take Profit 1)
-        """
+        # We need at least 22 candles for Kijun (21-period high/low) + current
+        min_len_required = 22
+        if len(mes_data) < min_len_required or len(mym_data) < min_len_required:
+            logger.warning("Not enough historical data – waiting …")
+            return "STAY"
 
-        # Check for negative trend change (down to up) for SHORT scale-in conditions
-        down_trend_changed, down_candles_since_change = self._find_recent_downtrend_change(psar_mes, mes_data.data)
-        
-        if mes_psar_positive and mym_psar_positive and kijun >= tenkan:
-            self.params.number_of_contracts = 12
-            self.params.psar_difference = 0  # Store for later use in order creation
-            logger.warning(f'Sellshort signal detected. MES+ MYM+ Kijun>=Tenkan. 12 contracts')
-            return 'SHORT'
-        elif (mes_psar_negative and mym_psar_negative and kijun >= tenkan and 
-              down_trend_changed and down_candles_since_change is not None and down_candles_since_change <= 4):
-            if difference > 0 and lowest_low and lowest_low > (difference * 0.618):
-                # Get the entry candle (the one from down_candles_since_change ago)
-                entry_candle = mes_data.data[-down_candles_since_change]
-                entry_close = entry_candle['close']
-                
-                # Compare entry candle close to thresholds (per specification)
-                if entry_close > (difference * 0.382):
-                    # Above 38.2% => 4 contracts (per specification)
-                    self.params.number_of_contracts = 4
-                    logger.warning(f'Sellshort signal detected. 4 contracts (entry close > 38.2%)')
-                else:
-                    # Below 38.2% => 2 contracts (per specification - already cleared TP1)
-                    self.params.number_of_contracts = 2
-                    logger.warning(f'Sellshort signal detected. 2 contracts (entry close <= 38.2%)')
-                
-                self.params.psar_difference = difference  # Store for later use in order creation
-                return 'SHORT'
+        # ----------------------------------------------------------------------
+        # 1. Indicator calculation (PSAR, Tenkan, Kijun)                       |
+        # ----------------------------------------------------------------------
 
-        """
-        EXIT SIGNALS:
-        1. If the weekly candle of MES is red (close < open), exit the long position
-        2. If the weekly candle of MES is green (close > open), exit the short position
-        3. If we have entered with a limit order and the closing of that first entry candle is
-        opposite to the operation, we close. That is, if we are LONG and the closing of the entry
-        candle is red (close < open), we close. If we are SHORT and the closing of the entry
-        candle is green (close > open), we close.
-        4. If we have entered with a limit order and at the closing of that entry candle the PSAR
-        of MYM is not aligned with the PSAR of MES, we close. That is, if we have entered
-        LONG with a limit order and at the closing of that entry candle the PSAR of MYM still
-        SHORT, we close. And vice versa.
-        """
-        # Check weekly candle exit conditions
-        is_weekly_candle, current_candle, prev_candle = self._get_weekly_candle(mes_data.data)
-        logger.info(f"Is weekly candle: {is_weekly_candle}")
-        
-        if is_weekly_candle and current_candle:
-            logger.info(f"Weekly candle - Open: {current_candle['open']:.2f}, Close: {current_candle['close']:.2f}")
-            # If the weekly candle is red (close < open), exit the long position
-            if current_candle['close'] < current_candle['open']:
-                logger.warning(f'Weekly exit signal detected. Red weekly candle - exit long position.')
-                return 'EXIT'
-            # If the weekly candle is green (close > open), exit the short position
-            elif current_candle['close'] > current_candle['open']:
-                logger.warning(f'Weekly exit signal detected. Green weekly candle - exit short position.')
-                return 'EXIT'
+        psar_mes_series = self._calculate_parabolic_sar(mes_data)
+        psar_mym_series = self._calculate_parabolic_sar(mym_data)
 
-        # Check entry candle validation (if we have existing positions)
-        entry_candle_exit = self._check_entry_candle_validation(mes_data.data, mym_data.data, current_psar_mes, current_psar_mym)
-        if entry_candle_exit:
-            logger.warning('Entry candle validation failed - triggering exit')
-            return 'EXIT'
-            
-        logger.info("No signals detected - staying in current position")
-        return 'STAY'
+        if len(psar_mes_series) == 0 or len(psar_mym_series) == 0:
+            logger.error("Could not compute PSAR – staying idle")
+            return "STAY"
+
+        # Persist indicators so that create_orders() can reuse them -------------
+        mes_contract.indicators["psar"] = psar_mes_series.tolist()
+        mym_contract.indicators["psar"] = psar_mym_series.tolist()
+
+        tenkan = self._calculate_tenkan(mes_data)
+        kijun = self._calculate_kijun(mes_data)
+
+        # Save to params so outside world (UI, debugging) can access ------------
+        self.params.indicators['tenkan'] = tenkan
+        self.params.indicators['kijun'] = kijun
+
+        # ----------------------------------------------------------------------
+        # 2. Define trend / flip variables just like the Pine-script             |
+        # ----------------------------------------------------------------------
+
+        close_mes = mes_data[-1]["close"]
+        open_mes = mes_data[-1]["open"]
+        close_mym = mym_data[-1]["close"]
+        open_mym = mym_data[-1]["open"]
+
+        psar_mes = psar_mes_series[-1]
+        psar_mes_prev = psar_mes_series[-2] if len(psar_mes_series) >= 2 else psar_mes
+
+        psar_mym = psar_mym_series[-1]
+        psar_mym_prev = psar_mym_series[-2] if len(psar_mym_series) >= 2 else psar_mym
+
+        trend_up_mes = psar_mes < close_mes
+        trend_down_mes = psar_mes > close_mes
+        trend_up_mym = psar_mym < close_mym
+        trend_down_mym = psar_mym > close_mym
+
+        flip_up_mes = trend_up_mes and not (psar_mes_prev < mes_data[-2]["close"])
+        flip_down_mes = trend_down_mes and not (psar_mes_prev > mes_data[-2]["close"])
+
+        flip_up_mym = trend_up_mym and not (psar_mym_prev < mym_data[-2]["close"])
+        flip_down_mym = trend_down_mym and not (psar_mym_prev > mym_data[-2]["close"])
+
+        # ----------------------------------------------------------------------
+        # 3. Bars since flip & PSAR diff calculations (MES)                     |
+        # ----------------------------------------------------------------------
+
+        # Determine if an up-trend or down-trend flip occurred within last 4 bars
+        change_up, candles_since_up = self._find_recent_trend_change(
+            psar_mes_series, mes_data, lookback=4
+        )
+        change_down, candles_since_down = self._find_recent_downtrend_change(
+            psar_mes_series, mes_data, lookback=4
+        )
+
+        # We only need bars_since_flip when there *was* a change recently.
+        bars_since_flip_mes = candles_since_up if change_up else (
+            candles_since_down if change_down else 999
+        )
+
+        # Get last PSAR of previous trend and first of current trend for diff ---
+        prev_psar, first_psar = self._get_trend_change_psars(psar_mes_series, mes_data)
+        diff_mes = abs(prev_psar - first_psar) if (prev_psar and first_psar) else 0
+
+        # Keep difference available for order sizing/pricing --------------------
+        self.params.psar_difference = diff_mes
+
+        # ----------------------------------------------------------------------
+        # 4. Recreate the Pine-script entry logic                                |
+        # ----------------------------------------------------------------------
+
+        # Initial entries -------------------------------------------------------
+        buy_initial = (
+            flip_up_mes and trend_up_mym and (close_mes > open_mes) and not self.has_open_position()
+        )
+
+        sell_initial = (
+            flip_down_mes
+            and trend_down_mym
+            and (kijun >= tenkan)
+            and (close_mes < open_mes)
+            and not self.has_open_position()
+        )
+
+        # Re-entries ------------------------------------------------------------
+        max_high_since_flip = self._calculate_highest_high_since_change(
+            mes_data, bars_since_flip_mes
+        ) if bars_since_flip_mes <= len(mes_data) else 0
+
+        min_low_since_flip = self._calculate_lowest_low_since_change(
+            mes_data, bars_since_flip_mes
+        ) if bars_since_flip_mes <= len(mes_data) else 0
+
+        buy_reentry = (
+            2 <= bars_since_flip_mes <= 4
+            and trend_up_mes
+            and trend_up_mym
+            and (max_high_since_flip < first_psar + 0.618 * diff_mes)
+            and (close_mes > open_mes)
+            and not self.has_open_position()
+        )
+
+        sell_reentry = (
+            2 <= bars_since_flip_mes <= 4
+            and trend_down_mes
+            and trend_down_mym
+            and (kijun >= tenkan)
+            and (min_low_since_flip > first_psar - 0.618 * diff_mes)
+            and (close_mes < open_mes)
+            and not self.has_open_position()
+        )
+
+        # ----------------------------------------------------------------------
+        # 5. Exit conditions                                                    |
+        # ----------------------------------------------------------------------
+
+        exit_signal = False
+
+        # PSAR trailing stop equivalent ----------------------------------------
+        if self.has_open_position():
+            for pos in self.params.positions:
+                size = pos.get("position", 0)
+                if size == 0:
+                    continue
+
+                if size > 0:  # LONG – stop when PSAR above price
+                    if psar_mes >= close_mes:
+                        exit_signal = True
+                elif size < 0:  # SHORT – stop when PSAR below price
+                    if psar_mes <= close_mes:
+                        exit_signal = True
+
+        # Weekly exit (Friday candle closes contrary to weekly open) -----------
+        is_weekly_candle, current_candle, prev_candle = self._get_weekly_candle(mes_data)
+        if is_weekly_candle and self.has_open_position():
+            weekly_open = current_candle["open"]
+            weekly_close = current_candle["close"]
+            for pos in self.params.positions:
+                size = pos.get("position", 0)
+                if size > 0 and weekly_close < weekly_open:
+                    exit_signal = True
+                elif size < 0 and weekly_close > weekly_open:
+                    exit_signal = True
+
+        # Entry candle validation (immediate exit) -----------------------------
+        psar_mym = psar_mym_series[-1]
+        if self._check_entry_candle_validation(mes_data, mym_data, psar_mes, psar_mym):
+            exit_signal = True
+
+        # ----------------------------------------------------------------------
+        # 6. Decision tree                                                      |
+        # ----------------------------------------------------------------------
+
+        # ----------------------------------------------------------------------
+        # 7. Determine contract sizing (6 vs 12)                                |
+        # ----------------------------------------------------------------------
+
+        qty = 0  # default until we know
+
+        if buy_initial:
+            qty = 12
+        elif sell_initial:
+            qty = 12
+        elif buy_reentry:
+            level_38 = first_psar + 0.382 * diff_mes
+            qty = 12 if close_mes < level_38 else 6
+        elif sell_reentry:
+            level_38 = first_psar - 0.382 * diff_mes
+            qty = 12 if close_mes > level_38 else 6
+
+        # Persist the qty so create_orders() can use it
+        if qty:
+            self.params.number_of_contracts = qty
+
+        # ----------------------------------------------------------------------
+        # 8. Final decision                                                     |
+        # ----------------------------------------------------------------------
+
+        if buy_initial or buy_reentry:
+            logger.warning(f"IchimokuBase -> LONG signal generated ({qty} contracts)")
+            return "LONG"
+        if sell_initial or sell_reentry:
+            logger.warning(f"IchimokuBase -> SHORT signal generated ({qty} contracts)")
+            return "SHORT"
+        if exit_signal:
+            logger.warning("IchimokuBase -> EXIT signal generated")
+            return "EXIT"
+
+        logger.info("IchimokuBase -> STAY (no actionable signal)")
+        return "STAY"
     
+    def backtest(self):
+        """Replay historical data to evaluate strategy performance.
+
+        The routine mimics real-time operation by revealing candles one at a time
+        to `self.run()` and capturing the resulting LONG / SHORT / EXIT / STAY
+        decisions.  Each completed trade is stored in a `TradeSnapshot` object.
+        """
+
+        # Reset runtime collections ------------------------------------------------
+        self.params.open_orders = []
+        self.params.executed_orders = []
+        self.params.positions = []
+
+        mes_contract = self.params.get_mes_data()
+        mym_contract = self.params.get_mym_data()
+
+        if not (mes_contract and mym_contract):
+            logger.error("Backtest requires both MES and MYM data – aborting")
+            return []
+
+        full_mes = mes_contract.data
+        full_mym = mym_contract.data
+
+        num_candles = min(len(full_mes), len(full_mym))
+        logger.info(f"Backtest will replay {num_candles} candles (MES/MYM synchronised).")
+
+        open_trade = None
+        trades = []
+        decisions = []  # NEW list to capture every decision chronologically
+
+        # Iterate candle-by-candle -------------------------------------------------
+        for idx in range(num_candles):
+
+            # Supply truncated history up to *including* idx to the strategy
+            mes_contract.data = full_mes[: idx + 1]
+            mym_contract.data = full_mym[: idx + 1]
+
+            decision = self.run()
+            # Record decision with timestamp for frontend usage
+            current_candle = full_mes[idx]
+            
+            current_date = current_candle.get("date")
+            current_close = current_candle.get("close")
+            decisions.append({
+                'date': current_date.strftime('%Y%m%d%H%M%S'),
+                'decision': decision
+            })
+
+            qty = getattr(self.params, "number_of_contracts", 1) or 1
+
+            # Handle decisions ---------------------------------------------------
+            if decision in ("LONG", "SHORT") and open_trade is None:
+                # New position opened
+                open_trade = TradeSnapshot(
+                    side=decision,
+                    qty=qty,
+                    entry_date=current_date,
+                    entry_price=current_close,
+                )
+                logger.warning(f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)")
+
+                # Reflect open position so that self.run() is aware
+                self.params.positions = [{"position": qty if decision == "LONG" else -qty}]
+
+            elif decision == "EXIT" and open_trade is not None:
+                # Close existing position
+                open_trade.close(current_date, current_close, "EXIT_SIGNAL")
+                trades.append(open_trade)
+                logger.info(f"Closed position on {current_date} @ {current_close}")
+                open_trade = None
+                self.params.positions = []
+
+            # Otherwise (STAY), nothing to do.
+
+        # Close any open position at the dataset end -----------------------------
+        if open_trade is not None:
+            open_trade.close(full_mes[-1].get("date"), full_mes[-1].get("close"), "END_OF_DATA")
+            trades.append(open_trade)
+            self.params.positions = []
+
+        logger.success(f"Backtest generated {len(trades)} trades.")
+        return trades, decisions
+
     def create_orders(self, action: str):
         mes_data = self.params.get_mes_data()
         mym_data = self.params.get_mym_data()
@@ -402,9 +517,6 @@ class IchimokuBase(Strategy):
         else:
             logger.info(f"No order created for action: {action}")
             return None
-
-    def backtest(self):
-        pass
 
     def _calculate_tenkan(self, data):
         last_5_days_mes = data[-5:]
@@ -663,7 +775,7 @@ class SMACrossover(Strategy):
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
-        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='5 Y', bar_size='1 day')
+        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='5 Y', bar_size=self.timeframe)
         logger.success("Strategy params refreshed")
 
     def run(self):
@@ -702,8 +814,9 @@ class SMACrossover(Strategy):
             f"SMA: {sma:.2f}, Prev SMA: {prev_sma:.2f}"
         )
 
+        has_position = self.has_open_position()
         # Entry condition: price crosses above SMA (bullish crossover)
-        if prev_close <= prev_sma and latest_close > sma:
+        if not has_position and prev_close <= prev_sma and latest_close > sma:
             logger.warning('Bullish crossover detected -> LONG')
             return 'LONG'
 
@@ -728,6 +841,7 @@ class SMACrossover(Strategy):
 
         open_trade = None
         trades = []
+        decisions = []  # NEW: keep a record of every decision taken
 
         # Iterate through each candle and progressively grow the data set that the strategy can see.
         for idx, candle in enumerate(full_historical_data):
@@ -744,8 +858,14 @@ class SMACrossover(Strategy):
             # Execute the strategy on this truncated data set
             decision = self.run()
 
+            # Record the decision for this candle
             current_date = candle.get('date')
             current_close = candle.get('close')
+            
+            decisions.append({
+                'date': current_date.strftime('%Y%m%d%H%M%S'),
+                'decision': decision
+            })
 
             qty = getattr(self.params, 'number_of_contracts', 1)
 
@@ -759,12 +879,15 @@ class SMACrossover(Strategy):
                 logger.warning(
                     f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)"
                 )
+                # Reflect open position in strategy params so that subsequent run() calls know
+                self.params.positions = [{'position': qty if decision == 'LONG' else -qty}]
 
             elif decision == "EXIT" and open_trade is not None:
                 open_trade.close(current_date, current_close, "EXIT_SIGNAL")
                 trades.append(open_trade)
                 logger.info(f"Closed position on {current_date} @ {current_close}")
                 open_trade = None
+                self.params.positions = []
 
         # Close any remaining open position at the end of the data set
         if open_trade is not None:
@@ -774,9 +897,11 @@ class SMACrossover(Strategy):
                 "END_OF_DATA",
             )
             trades.append(open_trade)
+            self.params.positions = []
 
         logger.success(f"Backtest generated {len(trades)} trades.")
-        return trades
+        # Return both trades and full decision history
+        return trades, decisions
 
     def create_orders(self, action: str):
         

@@ -75,9 +75,12 @@ class IchimokuBaseParams(BaseStrategyParams):
             ContractData(mes_contract),
             ContractData(mym_contract)
         ]
+
+        self.indicators = {
+            'tenkan': 0,
+            'kijun': 0,
+        }
         
-        self.tenkan: float = 0
-        self.kijun: float = 0
         self.number_of_contracts: int = 0
         
     def get_mes_data(self) -> Optional[ContractData]:
@@ -89,13 +92,9 @@ class IchimokuBaseParams(BaseStrategyParams):
         return self.get_data_by_symbol('MYM')
         
     def to_dict(self) -> Dict[str, Any]:
-        ichimoku_dict = {
-            'tenkan': self.tenkan,
-            'kijun': self.kijun,
-            'number_of_contracts': self.number_of_contracts,
-        }
         return {
-            **ichimoku_dict,
+            'indicators': self.indicators,
+            'number_of_contracts': self.number_of_contracts,
             **super().to_dict()
         }
 

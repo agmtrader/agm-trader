@@ -23,21 +23,32 @@ def deploy_main_routes(socketio):
         emit('disconnected', {'client_id': client_id}, broadcast=True)
         logger.announcement(f"Client {client_id} disconnected.", 'success')
 
-    @socketio.on('ping')
-    def ping():
+    @socketio.on('account_summary')
+    def account_summary():
         try:
-            logger.announcement("Ping received.", 'info')
-            emit('pong', trader.to_dict(), broadcast=True)
+            logger.announcement("Account summary requested.", 'info')
+            account_summary = trader.account_summary
+            emit('account_summary', account_summary, broadcast=True)
         except Exception as e:
-            logger.error(f"Error pinging Trader: {str(e)}")
-            emit('pong', str(e), broadcast=True)
+            logger.error(f"Error getting account summary: {str(e)}")
+            emit('account_summary', str(e), broadcast=True)
 
-    @socketio.on('backtest')
-    def backtest():
+    @socketio.on('history')
+    def history():
         try:
-            logger.announcement("Backtest data requested.", 'info')
-            backtest_data = [snapshot.to_dict() for snapshot in trader.backtest] if trader.backtest else []
-            emit('backtest_data', backtest_data, broadcast=True)
+            logger.announcement("History requested.", 'info')
+            history = trader.history
+            emit('history_data', history, broadcast=True)
         except Exception as e:
-            logger.error(f"Error getting backtest data: {str(e)}")
-            emit('backtest_data', str(e), broadcast=True)
+            logger.error(f"Error getting history: {str(e)}")
+            emit('history_data', str(e), broadcast=True)
+            
+    @socketio.on('trades')
+    def trades():
+        try:
+            logger.announcement("Trades requested.", 'info')
+            trades = [trade.to_dict() for trade in trader.trades]
+            emit('trades_data', trades, broadcast=True)
+        except Exception as e:
+            logger.error(f"Error getting trades: {str(e)}")
+            emit('trades_data', str(e), broadcast=True)

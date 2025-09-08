@@ -2,6 +2,7 @@
 certifi==2024.7.4
 numpy==2.0.2
 pandas==2.2.3
+pandas_ta==0.4.15
 python-dotenv==1.0.1
 pytz==2024.1
 

@@ -8,4 +8,4 @@ if [ -f .env ]; then
     done < .env
 fi
 
-gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 -b 0.0.0.0:${PORT} wsgi:application
+gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker --timeout 120 -w 1 -b 0.0.0.0:${PORT} wsgi:application
