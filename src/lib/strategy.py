@@ -777,7 +777,7 @@ class SMACrossover(Strategy):
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
-        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='1 Y', bar_size=self.timeframe)
+        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='3 M', bar_size=self.timeframe)
         logger.success("Strategy params refreshed")
 
     def run(self):
