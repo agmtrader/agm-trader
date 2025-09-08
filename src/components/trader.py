@@ -72,7 +72,7 @@ class Trader:
 
         self.running = True
 
-        logger.announcement(f"Running strategy: {self.strategy.name}", 'info')        
+        logger.announcement(f"Running strategy: {self.strategy.name}. Running again in {self.strategy.timeframe_seconds/3600} hours", 'info')        
 
         try:
             while True:
