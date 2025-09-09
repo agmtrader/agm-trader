@@ -373,11 +373,8 @@ class IchimokuBase(Strategy):
 
             # Otherwise (STAY), nothing to do.
 
-        # Close any open position at the dataset end -----------------------------
-        if open_trade is not None:
-            open_trade.close(full_mes[-1].get("date"), full_mes[-1].get("close"), "END_OF_DATA")
-            trades.append(open_trade)
-            self.params.positions = []
+        # Note: We no longer automatically close positions at the end of data
+        # Any open positions will remain open in the final results
 
         logger.success(f"Backtest generated {len(trades)} trades.")
         return trades, decisions
@@ -822,8 +819,8 @@ class SMACrossover(Strategy):
             logger.warning('Bullish crossover detected -> LONG')
             return 'LONG'
 
-        # Exit condition: price crosses below SMA (bearish cross-under)
-        elif prev_close >= prev_sma and latest_close < sma:
+        # Exit only if we currently hold an open position
+        elif has_position and prev_close >= prev_sma and latest_close < sma:
             logger.warning('Bearish cross-under detected -> EXIT')
             return 'EXIT'
 
@@ -891,15 +888,8 @@ class SMACrossover(Strategy):
                 open_trade = None
                 self.params.positions = []
 
-        # Close any remaining open position at the end of the data set
-        if open_trade is not None:
-            open_trade.close(
-                full_historical_data[-1].get('date'),
-                full_historical_data[-1].get('close'),
-                "END_OF_DATA",
-            )
-            trades.append(open_trade)
-            self.params.positions = []
+        # Note: We no longer automatically close positions at the end of data
+        # Any open positions will remain open in the final results
 
         logger.success(f"Backtest generated {len(trades)} trades.")
         # Return both trades and full decision history
