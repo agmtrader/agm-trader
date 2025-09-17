@@ -26,11 +26,14 @@ class OrderManager:
                 raise Exception("Cannot place order - no connection to IBKR")
 
         async def _place():
-            mes_data = strategy.params.get_mes_data()
-            if not mes_data:
-                logger.error("No MES contract data found for order placement")
+            # Use the first contract defined in the strategy parameters.  All
+            # strategies are expected to keep the live market data *inside* their
+            # ContractData objects, so we can rely on `params.contracts`.
+            if not getattr(strategy.params, "contracts", None):
+                logger.error("Strategy params does not contain any contracts – aborting")
                 return False
-            contract = mes_data.contract
+
+            contract = strategy.params.contracts[0].contract
             self.ib.qualifyContracts(contract)
             for o in orders:
                 logger.debug(f"Submitting order: {o}")

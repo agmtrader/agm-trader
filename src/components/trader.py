@@ -93,12 +93,20 @@ class Trader:
                 if self.decision == 'EXIT':
                     self.order_mgr.close_all_positions()
 
-                order = self.strategy.create_orders(self.decision)
-                if order:
-                    # TODO: Uncomment the line below when ready for live trading
-                    self.place_order(order)
-                    logger.warning("Order placement is currently disabled for safety")
-                    logger.announcement(f"Order placed: {order}", 'success')
+                if self.decision != 'STAY':
+                    order = self.strategy.create_orders(self.decision)
+                    if order:
+                        # TODO: Uncomment the line below when ready for live trading
+                        self.order_mgr.place_order(self.strategy, order)
+                        trade = TradeSnapshot(
+                            side=self.decision,
+                            qty=order.totalQuantity,
+                            entry_date=datetime.now(),
+                            entry_price=order.lmtPrice,
+                        )
+                        self.trades.append(trade)
+                        #logger.warning("Order placement is currently disabled for safety")
+                        logger.announcement(f"Order placed: {order}", 'success')
                     
                 # Refresh strategy params
                 self.account_summary = self.data.get_account_summary()

@@ -57,7 +57,7 @@ class IchimokuBase(Strategy):
         }
 
     def refresh_params(self, data_manager):
-        logger.announcement("Refreshing strategy params...", 'info')
+        logger.info("Refreshing strategy params...")
         for contract_data in self.params.contracts:
             contract_data.data = data_manager.get_historical_data(contract_data.contract, bar_size=self.timeframe)
         self.params.open_orders = data_manager.get_open_orders()
@@ -100,7 +100,7 @@ class IchimokuBase(Strategy):
         # We need at least 22 candles for Kijun (21-period high/low) + current
         min_len_required = 22
         if len(mes_data) < min_len_required or len(mym_data) < min_len_required:
-            logger.warning("Not enough historical data – waiting …")
+            logger.info("Not enough historical data – waiting …")
             return "STAY"
 
         # ----------------------------------------------------------------------
@@ -287,13 +287,13 @@ class IchimokuBase(Strategy):
         # ----------------------------------------------------------------------
 
         if buy_initial or buy_reentry:
-            logger.warning(f"IchimokuBase -> LONG signal generated ({qty} contracts)")
+            logger.info(f"IchimokuBase -> LONG signal generated ({qty} contracts)")
             return "LONG"
         if sell_initial or sell_reentry:
-            logger.warning(f"IchimokuBase -> SHORT signal generated ({qty} contracts)")
+            logger.info(f"IchimokuBase -> SHORT signal generated ({qty} contracts)")
             return "SHORT"
         if exit_signal:
-            logger.warning("IchimokuBase -> EXIT signal generated")
+            logger.info("IchimokuBase -> EXIT signal generated")
             return "EXIT"
 
         logger.info("IchimokuBase -> STAY (no actionable signal)")
@@ -306,6 +306,8 @@ class IchimokuBase(Strategy):
         to `self.run()` and capturing the resulting LONG / SHORT / EXIT / STAY
         decisions.  Each completed trade is stored in a `TradeSnapshot` object.
         """
+
+        logger.announcement("Starting backtest...", 'info')
 
         # Reset runtime collections ------------------------------------------------
         self.params.open_orders = []
@@ -358,7 +360,7 @@ class IchimokuBase(Strategy):
                     entry_date=current_date,
                     entry_price=current_close,
                 )
-                logger.warning(f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)")
+                logger.info(f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)")
 
                 # Reflect open position so that self.run() is aware
                 self.params.positions = [{"position": qty if decision == "LONG" else -qty}]
@@ -376,7 +378,7 @@ class IchimokuBase(Strategy):
         # Note: We no longer automatically close positions at the end of data
         # Any open positions will remain open in the final results
 
-        logger.success(f"Backtest generated {len(trades)} trades.")
+        logger.announcement(f"Backtest generated {len(trades)} trades.", 'success')
         return trades, decisions
 
     def create_orders(self, action: str):
@@ -770,12 +772,12 @@ class SMACrossover(Strategy):
         }
 
     def refresh_params(self, data_manager):
-        logger.announcement("Refreshing strategy params...", 'info')
+        logger.info("Refreshing strategy params...")
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
         self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='3 M', bar_size=self.timeframe)
-        logger.success("Strategy params refreshed")
+        logger.success("Successfully refreshed strategy params.")
 
     def run(self):
 
@@ -787,7 +789,7 @@ class SMACrossover(Strategy):
             return 'STAY'
 
         if len(main_contract.data) < 201:
-            logger.warning('Not enough data for calculation')
+            logger.info('Not enough data for calculation')
             return 'STAY'
         
         # Calculate 200-period Simple Moving Average (SMA)
@@ -875,7 +877,7 @@ class SMACrossover(Strategy):
                     entry_date=current_date,
                     entry_price=current_close,
                 )
-                logger.warning(
+                logger.info(
                     f"Opened {decision} on {current_date} @ {current_close} ({qty} contracts)"
                 )
                 # Reflect open position in strategy params so that subsequent run() calls know
