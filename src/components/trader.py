@@ -49,6 +49,10 @@ class Trader:
                 self.strategy = IchimokuBase(IchimokuBaseParams())
             case 'SMACROSSOVER':
                 self.strategy = SMACrossover(SMACrossoverParams())
+            case 'TTSStrategy':
+                self.strategy = TTSStrategy(TTSStrategyParams())
+            case 'ReversalStrategy':
+                self.strategy = ReversalStrategy(ReversalStrategyParams())
             case _:
                 raise Exception(f"Strategy {strategy_name} not found")
 

@@ -776,7 +776,7 @@ class SMACrossover(Strategy):
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
-        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='3 M', bar_size=self.timeframe)
+        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='5 Y', bar_size=self.timeframe)
         logger.success("Successfully refreshed strategy params.")
 
     def run(self):
@@ -920,5 +920,559 @@ class SMACrossover(Strategy):
             logger.info(f'No order created for action: {action}')
             return None
 
-        logger.info(f'Creating {action} market order for {qty} AAPL shares at approx {entry_price:.2f}')
+        logger.info(f'Creating {action} market order for {qty} shares at approx {entry_price:.2f}')
         return [order]
+
+
+# ============================================================================
+# TTS Strategy (weekly timeframe on MBT)
+# ----------------------------------------------------------------------------
+
+
+class TTSStrategy(Strategy):
+    """Python translation of the Trading-View *TTS Strategy* Pine-Script provided
+    by the user.
+
+    The logic runs on **weekly** candles of the MBT micro-bitcoin futures and
+    produces LONG / SHORT / EXIT / STAY decisions identical to the original
+    script.
+    """
+
+    def __init__(self, initialParams: "TTSParams"):
+        from src.lib.params import TTSParams  # local import to avoid circular dep
+
+        super().__init__(initialParams)
+        self.name = "TTS Strategy"
+        self.timeframe = "1 week"
+        self.timeframe_seconds = 604800
+
+    # ---------------------------------------------------------------------
+    # Parameter refresh helpers – identical pattern to other strategies
+    # ---------------------------------------------------------------------
+
+    def refresh_params(self, data_manager):
+        logger.info("Refreshing TTS params …")
+        mbt_data = self.params.get_mbt_data()
+        if not mbt_data:
+            logger.error("MBT contract missing – cannot refresh")
+            return
+
+        # Weekly candles over (e.g.) last 3 years should be enough
+        mbt_data.data = data_manager.get_historical_data(
+            mbt_data.contract, duration="3 Y", bar_size="1 week"
+        )
+
+        self.params.open_orders = data_manager.get_open_orders()
+        self.params.executed_orders = data_manager.get_completed_orders()
+        self.params.positions = data_manager.get_positions()
+
+        logger.success("TTS params refreshed.")
+
+    # ---------------------------------------------------------------------
+    # Core logic (indicator calculation + decision tree)
+    # ---------------------------------------------------------------------
+
+    def run(self):
+
+        logger.announcement("Executing TTS Strategy …", "info")
+
+        mbt_contract = self.params.get_mbt_data()
+        if not mbt_contract or len(mbt_contract.data) < 21:  # need 20 for BB + prev
+            logger.info("Not enough data – STAY")
+            return "STAY"
+
+        data = mbt_contract.data
+
+        # Convert lists into pandas DataFrame for convenience -----------------
+        df = pd.DataFrame(data)
+
+        # Bollinger Band calculations (20-period, 2σ) -------------------------
+        close = df["close"].astype(float)
+        sma20 = close.rolling(window=20).mean()
+        std20 = close.rolling(window=20).std(ddof=0)
+        upper = sma20 + 2 * std20
+        lower = sma20 - 2 * std20
+        midband = (upper + lower) / 2
+
+        # Persist full series so UI can plot it ------------------------------
+        self.params.indicators["midband"] = midband.tolist()
+
+        # TTS computation last bar -------------------------------------------
+        idx = len(df) - 1
+        if idx < 1:
+            return "STAY"
+
+        factor1 = df.loc[idx, "open"] - df.loc[idx, "high"]
+        factor2 = df.loc[idx, "open"] - df.loc[idx, "low"]
+        factor3 = (df.loc[idx, "open"] - df.loc[idx, "close"]) * -1.5
+        factor4 = midband.iloc[idx] - midband.iloc[idx - 1]
+
+        tts = factor1 + factor2 + factor3 - factor4
+
+        # Save TTS value history
+        previous_tts_series = self.params.indicators.get("tts", [])
+        if len(previous_tts_series) == len(df) - 1:
+            previous_tts_series.append(tts)
+        else:
+            # in case run() is called multiple times per candle we overwrite last
+            if previous_tts_series:
+                previous_tts_series[-1] = tts
+            else:
+                previous_tts_series = [tts]
+        self.params.indicators["tts"] = previous_tts_series
+
+        # Determine signals ---------------------------------------------------
+        tts_prev = previous_tts_series[-2] if len(previous_tts_series) >= 2 else 0
+
+        long_signal = tts > 0 and tts_prev <= 0
+        short_signal = tts < 0 and tts_prev >= 0
+
+        # Stop / inversion exit ---------------------------------------------
+        exit_signal = False
+        if self.has_open_position():
+            for pos in self.params.positions:
+                size = pos.get("position", 0)
+                if size == 0:
+                    continue
+                if size > 0 and tts < 0:
+                    exit_signal = True
+                elif size < 0 and tts > 0:
+                    exit_signal = True
+
+            # Stop-loss based on previous week low/high
+            if not exit_signal:
+                prev_low = df.loc[idx - 1, "low"]
+                prev_high = df.loc[idx - 1, "high"]
+                last_close = df.loc[idx, "close"]
+                for pos in self.params.positions:
+                    size = pos.get("position", 0)
+                    if size > 0 and last_close <= prev_low:
+                        exit_signal = True
+                    elif size < 0 and last_close >= prev_high:
+                        exit_signal = True
+
+        # ------------------------------------------------------------------
+        # Decision tree
+        # ------------------------------------------------------------------
+
+        if long_signal and not self.has_open_position():
+            logger.info("TTS -> LONG signal")
+            return "LONG"
+
+        if short_signal and not self.has_open_position():
+            logger.info("TTS -> SHORT signal")
+            return "SHORT"
+
+        if exit_signal:
+            logger.info("TTS -> EXIT signal")
+            return "EXIT"
+
+        logger.info("TTS -> STAY")
+        return "STAY"
+
+    # ---------------------------------------------------------------------
+    #  Backtesting (very similar to SMA-crossover simpler version)
+    # ---------------------------------------------------------------------
+
+    def backtest(self):
+        logger.announcement("Starting TTS backtest …", "info")
+
+        self.params.open_orders = []
+        self.params.executed_orders = []
+        self.params.positions = []
+
+        mbt_full = self.params.get_mbt_data().data
+        num_candles = len(mbt_full)
+        logger.info(f"Backtest will replay {num_candles} weekly candles.")
+
+        open_trade = None
+        trades = []
+        decisions = []
+
+        # iterate candle-by-candle (starting once we have 21 bars)
+        for idx in range(len(mbt_full)):
+            if idx < 20:
+                continue  # need SMA window
+
+            # Provide truncated history
+            self.params.get_mbt_data().data = mbt_full[: idx + 1]
+
+            decision = self.run()
+
+            current_candle = mbt_full[idx]
+            current_date = current_candle.get("date")
+            current_close = current_candle.get("close")
+
+            decisions.append({
+                "date": current_date.strftime("%Y%m%d%H%M%S"),
+                "decision": decision,
+            })
+
+            qty = self.params.number_of_contracts
+
+            if decision in ("LONG", "SHORT") and open_trade is None:
+                open_trade = TradeSnapshot(
+                    side=decision,
+                    qty=qty,
+                    entry_date=current_date,
+                    entry_price=current_close,
+                )
+                logger.info(f"Opened {decision} on {current_date} @ {current_close}")
+                self.params.positions = [{"position": qty if decision == "LONG" else -qty}]
+
+            elif decision == "EXIT" and open_trade is not None:
+                open_trade.close(current_date, current_close, "EXIT_SIGNAL")
+                trades.append(open_trade)
+                logger.info(f"Closed position on {current_date} @ {current_close}")
+                open_trade = None
+                self.params.positions = []
+
+        logger.success(f"Backtest generated {len(trades)} trades.")
+        return trades, decisions
+
+    # ---------------------------------------------------------------------
+    # Order creation – basic implementation (market orders + stop)
+    # ---------------------------------------------------------------------
+
+    def create_orders(self, action: str):
+        mbt_data = self.params.get_mbt_data()
+        if not mbt_data or not mbt_data.data:
+            logger.error("No MBT data available to create orders")
+            return None
+
+        last_price = mbt_data.data[-1]["close"]
+        qty = self.params.number_of_contracts
+
+        orders = []
+
+        if action == "LONG":
+            entry = MarketOrder(action="BUY", totalQuantity=qty)
+            sl = StopOrder(action="SELL", totalQuantity=qty, stopPrice=mbt_data.data[-2]["low"], parentId=entry.orderId, transmit=True)
+            orders = [entry, sl]
+
+        elif action == "SHORT":
+            entry = MarketOrder(action="SELL", totalQuantity=qty)
+            sl = StopOrder(action="BUY", totalQuantity=qty, stopPrice=mbt_data.data[-2]["high"], parentId=entry.orderId, transmit=True)
+            orders = [entry, sl]
+
+        else:
+            logger.info(f"No order created for action: {action}")
+            return None
+
+        logger.info(f"Created {action} order for {qty} MBT contracts @ approx {last_price}")
+        return orders
+
+
+# ============================================================================
+# REVERSAL Strategy (daily MES + MYM pull-back)
+# ----------------------------------------------------------------------------
+
+
+class ReversalStrategy(Strategy):
+    """Python translation of the Pine-script *REVERSAL Strategy* (daily).
+
+    The system watches daily candles of MES and MYM, waits for a down-trend
+    (PSAR negative) and enters LONG on a 61.8–100 % pull-back measured from the
+    PSAR jump.
+    """
+
+    def __init__(self, initialParams: "ReversalParams"):
+        from src.lib.params import ReversalParams  # local import to avoid circular
+
+        super().__init__(initialParams)
+        self.name = "REVERSAL Strategy"
+        self.timeframe = "1 day"
+        self.timeframe_seconds = 86400
+
+        # Stateful helpers replicating Pine `var` behaviour -------------------
+        self.prev_psar_mes: float | None = None
+        self.trend_start_idx: int | None = None
+        self.entered_this_trend = False
+        self.min_since_trend = None
+        self.psar_at_min = None
+        self.entry_close = None
+
+    # ---------------------------------------------------------------------
+    # Parameter refresh
+    # ---------------------------------------------------------------------
+
+    def refresh_params(self, data_manager):
+        logger.info("Refreshing REVERSAL params …")
+        mes_data = self.params.get_mes_data()
+        mym_data = self.params.get_mym_data()
+
+        if not (mes_data and mym_data):
+            logger.error("MES or MYM contract missing – aborting refresh")
+            return
+
+        mes_data.data = data_manager.get_historical_data(mes_data.contract, duration="3 Y", bar_size="1 day")
+        mym_data.data = data_manager.get_historical_data(mym_data.contract, duration="3 Y", bar_size="1 day")
+
+        self.params.open_orders = data_manager.get_open_orders()
+        self.params.executed_orders = data_manager.get_completed_orders()
+        self.params.positions = data_manager.get_positions()
+
+        logger.success("REVERSAL params refreshed.")
+
+    # ---------------------------------------------------------------------
+    # Helper – Parabolic SAR (reuse _calculate_parabolic_sar from IchimokuBase)
+    # ---------------------------------------------------------------------
+
+    def _psar(self, data):
+        return self._calculate_parabolic_sar(data)
+
+    # ---------------------------------------------------------------------
+    # Core logic
+    # ---------------------------------------------------------------------
+
+    def run(self):
+
+        mes_contract = self.params.get_mes_data()
+        mym_contract = self.params.get_mym_data()
+
+        if not (mes_contract and mym_contract):
+            logger.error("Missing data – STAY")
+            return "STAY"
+
+        if len(mes_contract.data) < 2 or len(mym_contract.data) < 2:
+            logger.info("Not enough data – STAY")
+            return "STAY"
+
+        mes_data = mes_contract.data
+        mym_data = mym_contract.data
+
+        # Calculate PSAR for full series (reuse method)
+        psar_mes_series = self._psar(mes_data)
+        psar_mym_series = self._psar(mym_data)
+
+        if len(psar_mes_series) < 2:
+            return "STAY"
+
+        # Persist indicators for UI -----------------------------------------
+        mes_contract.indicators["psar"] = psar_mes_series.tolist()
+        mym_contract.indicators["psar"] = psar_mym_series.tolist()
+
+        idx = len(mes_data) - 1
+        psar_mes = psar_mes_series[idx]
+        psar_mes_prev = psar_mes_series[idx - 1]
+        psar_neg_mes = psar_mes < mes_data[idx]["close"]  # price above psar?
+
+        psar_mym = psar_mym_series[idx]
+        psar_neg_mym = psar_mym < mym_data[idx]["close"]
+
+        # Track trend changes (equivalent to Pine var logic) ------------------
+        if self.prev_psar_mes is None:
+            self.prev_psar_mes = psar_mes_prev
+            self.trend_start_idx = idx - 1
+            self.min_since_trend = mes_data[idx]["low"]
+            self.psar_at_min = psar_mes
+            self.entered_this_trend = False
+
+        if (psar_mes < mes_data[idx]["close"]) != (psar_mes_prev < mes_data[idx - 1]["close"]):
+            # Trend flipped
+            self.prev_psar_mes = psar_mes_prev
+            self.trend_start_idx = idx
+            self.entered_this_trend = False
+            self.min_since_trend = mes_data[idx]["low"]
+            self.psar_at_min = psar_mes
+
+        # Update min low & psar_at_min inside current trend -------------------
+        if self.trend_start_idx is not None and idx >= self.trend_start_idx:
+            if mes_data[idx]["low"] < self.min_since_trend:
+                self.min_since_trend = mes_data[idx]["low"]
+                self.psar_at_min = psar_mes
+
+        # Jump (distance between PSARs at trend change) -----------------------
+        jump = abs(psar_mes - self.prev_psar_mes)
+
+        fib_618_level = self.prev_psar_mes - 0.618 * jump
+        self.params.indicators["fib_level"] = fib_618_level
+
+        # Entry conditions ----------------------------------------------------
+        entry_condition = (
+            psar_neg_mes
+            and psar_neg_mym
+            and self.min_since_trend < fib_618_level
+            and mes_data[idx]["close"] > fib_618_level
+            and not self.entered_this_trend
+        )
+
+        entry_100 = (
+            psar_neg_mes
+            and psar_neg_mym
+            and self.min_since_trend <= self.prev_psar_mes
+            and mes_data[idx]["close"] > self.prev_psar_mes
+            and not self.entered_this_trend
+        )
+
+        exit_signal = False
+
+        if (entry_condition or entry_100) and not self.has_open_position():
+            self.entered_this_trend = True
+            self.entry_close = mes_data[idx]["close"]
+
+            # TP calculation -------------------------------------------------
+            tp_diff = abs(self.entry_close - self.psar_at_min)
+            tp_level = self.entry_close + 0.618 * tp_diff
+            self.tp_level = tp_level  # store for exit logic
+
+            logger.warning("REVERSAL -> LONG signal")
+            return "LONG"
+
+        # Exit logic --------------------------------------------------------
+        if self.has_open_position():
+            # SL: mirror distance to PSAR at entry candle
+            sl_long = self.entry_close - (self.entry_close - psar_mes)
+
+            last_close = mes_data[idx]["close"]
+            if last_close <= sl_long:
+                exit_signal = True
+            if last_close >= getattr(self, "tp_level", float("inf")):
+                exit_signal = True
+            if not psar_neg_mes:
+                exit_signal = True
+
+        if exit_signal:
+            logger.info("REVERSAL -> EXIT signal")
+            return "EXIT"
+
+        return "STAY"
+
+    # ---------------------------------------------------------------------
+    # Simplified order creation (market + stop / limit TP)
+    # ---------------------------------------------------------------------
+
+    def create_orders(self, action: str):
+        mes_data = self.params.get_mes_data()
+        if not mes_data or not mes_data.data:
+            return None
+
+        qty = self.params.number_of_contracts
+        last_price = mes_data.data[-1]["close"]
+
+        if action == "LONG":
+            parent = MarketOrder(action="BUY", totalQuantity=qty)
+            # SL & TP (using stored levels)
+            sl_price = self.entry_close - (self.entry_close - mes_data.data[-1]["low"])
+            tp_price = getattr(self, "tp_level", last_price * 1.01)
+            sl = StopOrder(action="SELL", totalQuantity=qty, stopPrice=sl_price, parentId=parent.orderId, transmit=False)
+            tp = LimitOrder(action="SELL", totalQuantity=qty, lmtPrice=tp_price, parentId=parent.orderId, transmit=True)
+            return [parent, sl, tp]
+
+        return None
+
+
+# ============================================================================
+# 550-minute “Tardío” Strategy (MES only)
+# ----------------------------------------------------------------------------
+
+
+class Tardio550Strategy(Strategy):
+    """Implementation of the 550-minute *Tardío* PSAR pull-back strategy."""
+
+    def __init__(self, initialParams: "Tardio550Params"):
+        from src.lib.params import Tardio550Params
+
+        super().__init__(initialParams)
+        self.name = "550 Tardío Strategy"
+        self.timeframe = "550 mins"
+        self.timeframe_seconds = 550 * 60
+
+        # State vars replicating Pine `var`
+        self.prev_trend_first_psar: float | None = None
+        self.prev_trend_bars = 0
+        self.new_trend = False
+
+    # Helpers ----------------------------------------------------------------
+    def _psar(self, data):
+        return self._calculate_parabolic_sar(data)
+
+    def refresh_params(self, data_manager):
+        mes_data = self.params.get_mes_data()
+        mes_data.data = data_manager.get_historical_data(mes_data.contract, duration="180 D", bar_size="550 mins")
+
+    # ---------------------------------------------------------------------
+    def run(self):
+
+        mes_contract = self.params.get_mes_data()
+        if not mes_contract or len(mes_contract.data) < 2:
+            return "STAY"
+
+        data = mes_contract.data
+        psar_series = self._psar(data)
+        mes_contract.indicators["psar"] = psar_series.tolist()
+
+        idx = len(data) - 1
+        psar = psar_series[idx]
+        psar_prev = psar_series[idx - 1]
+
+        psar_neg = psar < data[idx]["close"]
+        psar_neg_prev = psar_prev < data[idx - 1]["close"]
+
+        # Detect trend flip --------------------------------------------------
+        if psar_neg != psar_neg_prev:
+            self.prev_trend_first_psar = psar_prev
+            self.prev_trend_bars = 1
+            self.new_trend = True
+        else:
+            if self.new_trend:
+                self.prev_trend_bars += 1
+            self.new_trend = False
+
+        can_enter = self.prev_trend_bars >= 2 if self.prev_trend_first_psar else False
+
+        jump = abs(psar - (self.prev_trend_first_psar or psar))
+        fib_382 = (self.prev_trend_first_psar or psar) + 0.382 * jump
+        fib_618 = (self.prev_trend_first_psar or psar) + 0.618 * jump
+
+        self.params.indicators["fib_382"] = fib_382
+        self.params.indicators["fib_618"] = fib_618
+
+        # Entry Orders -------------------------------------------------------
+        if psar_neg_prev and not psar_neg and can_enter and not self.has_open_position():
+            # LONG
+            self.params.number_of_contracts = 12
+            self.limit_price = self.prev_trend_first_psar
+            return "LONG"
+
+        if (not psar_neg_prev) and psar_neg and can_enter and not self.has_open_position():
+            # SHORT
+            self.params.number_of_contracts = 4
+            self.limit_price = self.prev_trend_first_psar
+            return "SHORT"
+
+        # Exit logic ---------------------------------------------------------
+        exit_signal = False
+        if self.has_open_position():
+            last_close = data[idx]["close"]
+            if last_close <= psar and any(p.get("position", 0) > 0 for p in self.params.positions):
+                exit_signal = True
+            if last_close >= psar and any(p.get("position", 0) < 0 for p in self.params.positions):
+                exit_signal = True
+        if exit_signal:
+            return "EXIT"
+
+        return "STAY"
+
+    # ---------------------------------------------------------------------
+    def create_orders(self, action: str):
+        mes_data = self.params.get_mes_data()
+        if not mes_data.data:
+            return None
+
+        qty = self.params.number_of_contracts
+        if action == "LONG":
+            parent = LimitOrder(action="BUY", totalQuantity=qty, lmtPrice=self.limit_price, transmit=False)
+            sl = StopOrder(action="SELL", totalQuantity=qty, stopPrice=mes_data.data[-1]["close"], parentId=parent.orderId, transmit=False)
+            tp1 = LimitOrder(action="SELL", totalQuantity=qty // 2, lmtPrice=self.params.indicators["fib_382"], parentId=parent.orderId, transmit=False)
+            tp2 = LimitOrder(action="SELL", totalQuantity=qty // 2, lmtPrice=self.params.indicators["fib_618"], parentId=parent.orderId, transmit=True)
+            return [parent, sl, tp1, tp2]
+
+        if action == "SHORT":
+            parent = LimitOrder(action="SELL", totalQuantity=qty, lmtPrice=self.limit_price, transmit=False)
+            sl = StopOrder(action="BUY", totalQuantity=qty, stopPrice=mes_data.data[-1]["close"], parentId=parent.orderId, transmit=False)
+            tp1 = LimitOrder(action="BUY", totalQuantity=qty // 2, lmtPrice=self.prev_trend_first_psar - 0.382 * abs(self.limit_price - psar), parentId=parent.orderId, transmit=False)
+            tp2 = LimitOrder(action="BUY", totalQuantity=qty // 2, lmtPrice=self.prev_trend_first_psar - 0.618 * abs(self.limit_price - psar), parentId=parent.orderId, transmit=True)
+            return [parent, sl, tp1, tp2]
+
+        return None
