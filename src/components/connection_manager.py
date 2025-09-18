@@ -95,6 +95,7 @@ class ConnectionManager:
                 attempt = 0
                 while attempt < max_attempts:
                     try:
+                        logger.info(f"Connecting to IBKR on {self.host}:{self.port} with clientId 1")
                         await self.ib.connectAsync(self.host, self.port, clientId=1)
                         if self.ib.isConnected():
                             return True
