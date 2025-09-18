@@ -776,7 +776,7 @@ class SMACrossover(Strategy):
         self.params.open_orders = data_manager.get_open_orders()
         self.params.executed_orders = data_manager.get_completed_orders()
         self.params.positions = data_manager.get_positions()
-        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='5 Y', bar_size=self.timeframe)
+        self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='3 M', bar_size=self.timeframe)
         logger.success("Successfully refreshed strategy params.")
 
     def run(self):
@@ -792,8 +792,8 @@ class SMACrossover(Strategy):
             logger.info('Not enough data for calculation')
             return 'STAY'
         
-        # Calculate 200-period Simple Moving Average (SMA)
-        window = 200
+        # Calculate 50-period Simple Moving Average (SMA)
+        window = 50
         sma_values = [
             np.mean([d['close'] for d in main_contract.data[max(0, i - window):i]])
             for i in range(1, len(main_contract.data) + 1)
