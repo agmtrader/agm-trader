@@ -7,12 +7,13 @@ import time
 
 import pandas as pd
 
-from src.components.connection_manager import ConnectionManager
-from src.components.data_manager import DataManager
-from src.components.order_manager import OrderManager
+from src.utils.managers.connection_manager import ConnectionManager
+from src.utils.managers.data_manager import DataManager
+from src.utils.managers.order_manager import OrderManager
 
-from src.lib.strategy import IchimokuBase, SMACrossover
-from src.lib.params import IchimokuBaseParams, SMACrossoverParams
+from src.lib.trade_snapshot import TradeSnapshot
+
+from src.components.strategy.sma_cross import SMACrossover, SMACrossoverParams
 
 class Trader:
 
@@ -45,14 +46,8 @@ class Trader:
     def run(self, strategy_name: str):
 
         match strategy_name:
-            case 'ICHIMOKU_BASE':
-                self.strategy = IchimokuBase(IchimokuBaseParams())
             case 'SMACROSSOVER':
                 self.strategy = SMACrossover(SMACrossoverParams())
-            case 'TTSStrategy':
-                self.strategy = TTSStrategy(TTSStrategyParams())
-            case 'ReversalStrategy':
-                self.strategy = ReversalStrategy(ReversalStrategyParams())
             case _:
                 raise Exception(f"Strategy {strategy_name} not found")
 

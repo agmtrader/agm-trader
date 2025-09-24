@@ -1,6 +1,6 @@
 from ib_insync import *
 from src.utils.logger import logger
-from src.components.connection_manager import ConnectionManager
+from src.utils.managers.connection_manager import ConnectionManager
 import math
 import time
 
