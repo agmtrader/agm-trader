@@ -14,6 +14,7 @@ from src.utils.managers.order_manager import OrderManager
 from src.lib.trade_snapshot import TradeSnapshot
 
 from src.components.strategy.sma_cross import SMACrossover, SMACrossoverParams
+from src.components.strategy.ichimoku_base import IchimokuBase, IchimokuBaseParams
 
 class Trader:
 
@@ -35,7 +36,7 @@ class Trader:
 
         try:
             self.conn.start_connection_monitor()
-            self.trading_thread = threading.Thread(target=self.run, args=('SMACROSSOVER',))
+            self.trading_thread = threading.Thread(target=self.run, args=('ICHIMOKU_BASE',))
             self.trading_thread.start()
             nest_asyncio.apply()
 
@@ -48,6 +49,8 @@ class Trader:
         match strategy_name:
             case 'SMACROSSOVER':
                 self.strategy = SMACrossover(SMACrossoverParams())
+            case 'ICHIMOKU_BASE':
+                self.strategy = IchimokuBase(IchimokuBaseParams())
             case _:
                 raise Exception(f"Strategy {strategy_name} not found")
 

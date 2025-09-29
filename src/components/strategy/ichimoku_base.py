@@ -12,8 +12,8 @@ class IchimokuBaseParams(BaseStrategyParams):
 
     def __init__(self):
         super().__init__()
-        # NOTE: Replace with correct futures contracts when integrating with live trading
-        mes_contract = Stock('MES', 'SMART', 'USD')  # placeholder for Micro E-mini S&P 500 futures
+        contract_month = '202512'
+        mes_contract = Future('MES', contract_month, 'CME')
         self.contracts = [ContractData(mes_contract)]
         self.indicators = {
             'psar': []
@@ -36,7 +36,7 @@ class IchimokuBase(Strategy):
 
     def __init__(self, initialParams: IchimokuBaseParams):
         super().__init__(initialParams)
-        self.name = 'Ichimoku Base (PSAR)'
+        self.name = 'ICHIMOKU_BASE'
         self.timeframe = '1 day'
         self.timeframe_seconds = 86400
         # Internal state tracking
@@ -133,7 +133,7 @@ class IchimokuBase(Strategy):
         self.params.positions = data_manager.get_positions()
         # Fetch 6 months of daily data as a starting point
         self.params.contracts[0].data = data_manager.get_historical_data(
-            self.params.contracts[0].contract, duration='6 M', bar_size=self.timeframe
+            self.params.contracts[0].contract, duration='1 Y', bar_size=self.timeframe
         )
         logger.success("Params refreshed.")
 
