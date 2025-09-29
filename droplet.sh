@@ -68,7 +68,10 @@ docker compose version
 
 # Build and start the containers
 docker compose build
-docker compose up -d
+docker compose up ibkr-gateway -d
+echo "Waiting for IBKR Gateway to start..."
+sleep 30
+docker compose up trader-socket -d
 
 # Test the containers
 docker ps
