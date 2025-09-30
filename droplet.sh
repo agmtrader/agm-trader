@@ -1,5 +1,12 @@
 #!/bin/bash
 
+#######################
+# Connect to the remote host
+#######################
+
+set -e
+set -o pipefail
+
 # If not already running over SSH, connect to the remote host and execute this script there
 droplet_ip="agm-trader-node"
 email="aa@agmtechnology.com"
@@ -11,9 +18,9 @@ if [ -z "$SSH_CONNECTION" ]; then
   exit $?
 fi
 
-# This script is used to configure a new droplet for the AGM Auto Trader.
-set -e
-set -o pipefail
+#######################
+# Install Prerequisites
+#######################
 
 # Update the droplet's package manager
 sudo apt-get update
@@ -25,6 +32,10 @@ sudo apt-get install -y git python3 python3-pip python3-venv neovim
 # Configure git
 git config --global user.email $email
 git config --global user.name $name
+
+#######################
+# Install Docker
+#######################
 
 # Add Docker's official GPG key:
 if ! command -v docker &> /dev/null; then
@@ -46,6 +57,14 @@ sudo usermod -aG docker $USER
 newgrp docker
 fi
 
+# Test installations
+docker --version
+docker compose version
+
+#######################
+# Install Trader
+#######################
+
 # Create a directory for the Trader
 mkdir -p ~/Trader
 cd ~/Trader
@@ -62,16 +81,10 @@ if [ -f /tmp/agm-trader.env ]; then
   mv /tmp/agm-trader.env .env
 fi
 
-# Test installations
-docker --version
-docker compose version
-
 # Build and start the containers
 docker compose build
 docker compose up ibkr-gateway -d
-echo "Waiting for IBKR Gateway to start..."
+docker ps
 sleep 30
 docker compose up trader-socket -d
-
-# Test the containers
 docker ps
