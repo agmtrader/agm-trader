@@ -6,7 +6,6 @@ from typing import Dict, Any, List
 from ib_insync import *
 from src.lib.trade_snapshot import TradeSnapshot
 
-
 class IchimokuBaseParams(BaseStrategyParams):
     """Parameters container for the Ichimoku (PSAR-based) strategy"""
 
@@ -24,7 +23,6 @@ class IchimokuBaseParams(BaseStrategyParams):
             'indicators': self.indicators,
             **super().to_dict(),
         }
-
 
 class IchimokuBase(Strategy):
     """Simplified implementation of the “ICHIMOKU BASE” strategy using PSAR flips.
