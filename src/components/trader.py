@@ -36,7 +36,7 @@ class Trader:
 
         try:
             self.conn.start_connection_monitor()
-            self.trading_thread = threading.Thread(target=self.run, args=('ICHIMOKU_BASE',))
+            self.trading_thread = threading.Thread(target=self.run, args=('SMACROSSOVER',))
             self.trading_thread.start()
             nest_asyncio.apply()
 
@@ -54,9 +54,11 @@ class Trader:
             case _:
                 raise Exception(f"Strategy {strategy_name} not found")
 
-        self.account_summary = self.data.get_account_summary()
+        self.order_mgr.cancel_all_orders()
         self.order_mgr.close_all_positions()
-        self.strategy.refresh_params(self.data)
+
+        self.account_summary = self.data.get_account_summary()
+        self.strategy.params = self.strategy.refresh_params(self.data)
 
         self.trades, decisions = self.strategy.backtest()
 
@@ -73,7 +75,7 @@ class Trader:
 
         self.running = True
 
-        logger.announcement(f"Running strategy: {self.strategy.name}. Running again in {self.strategy.timeframe_seconds/3600} hours", 'info')        
+        logger.announcement(f"Running strategy: {self.strategy.name}. Running again in {self.strategy.timeframe_seconds/3600} hours", 'info')    
 
         try:
             while True:
@@ -86,6 +88,7 @@ class Trader:
                     exit()
 
                 self.strategy.refresh_params(self.data)
+                self.strategy.params = self.strategy.refresh_params(self.data)
                 self.account_summary = self.data.get_account_summary()
                 
                 self.decision = self.strategy.run()
@@ -114,6 +117,7 @@ class Trader:
                 # Refresh strategy params
                 self.account_summary = self.data.get_account_summary()
                 self.strategy.refresh_params(self.data)
+                self.strategy.params = self.strategy.refresh_params(self.data)
 
                 # Record a snapshot of the current state every timeframe
                 self.history.append(self.to_dict())

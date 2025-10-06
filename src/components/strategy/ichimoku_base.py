@@ -135,6 +135,9 @@ class IchimokuBase(Strategy):
         )
         logger.success("Params refreshed.")
 
+        # Return the updated params so that caller can persist the latest snapshot
+        return self.params
+
     # ------------------------------------------------------------------
     def run(self):
         logger.announcement('Executing Ichimoku Base strategy...', 'info')

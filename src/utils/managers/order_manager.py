@@ -47,16 +47,40 @@ class OrderManager:
             logger.error(f"Error placing order: {str(e)}")
             raise
 
+    def cancel_all_orders(self):
+        logger.info("Closing all positions…")
+        if not self.conn.is_connected():
+            logger.warning("No connection when cancelling orders. Attempting reconnection…")
+            if not self.conn.reconnect():
+                raise Exception("Cannot cancel orders - no connection to IBKR")
+
+        async def _close():
+            for order in self.ib.orders():
+                self.ib.cancelOrder(order)
+            logger.success("Successfully closed all positions")
+            return True
+
+        try:
+            self.conn._execute(_close())
+            return True
+        except Exception as e:
+            logger.error(f"Error closing all positions: {str(e)}")
+            raise
+    
     def close_all_positions(self):
         logger.info("Closing all positions…")
         if not self.conn.is_connected():
             logger.warning("No connection when closing positions. Attempting reconnection…")
             if not self.conn.reconnect():
                 raise Exception("Cannot close positions - no connection to IBKR")
-
+                
         async def _close():
-            for order in self.ib.orders():
-                self.ib.cancelOrder(order)
+            for position in self.ib.positions():
+                print(position)
+                action = 'SELL' if position.position > 0 else 'BUY'
+                contract = position.contract
+                order = MarketOrder(action=action, totalQuantity=position.position)
+                self.ib.placeOrder(contract=contract, order=order)
             logger.success("Successfully closed all positions")
             return True
 

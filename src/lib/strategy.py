@@ -19,7 +19,10 @@ class Strategy(ABC):
 
     @abstractmethod
     def refresh_params(self, data_manager):
-        """Refresh internal parameters using the supplied DataManager instance."""
+        """Refresh internal parameters using the supplied DataManager instance.
+        Should mutate self.params **and** return it so the caller can persist the
+        latest snapshot.
+        """
         pass
 
     @abstractmethod

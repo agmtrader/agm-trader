@@ -47,6 +47,9 @@ class SMACrossover(Strategy):
         self.params.contracts[0].data = data_manager.get_historical_data(self.params.contracts[0].contract, duration='3 M', bar_size=self.timeframe)
         logger.success("Successfully refreshed strategy params.")
 
+        # Return the updated params so caller can persist changes over time
+        return self.params
+
     def run(self):
 
         logger.announcement('Executing strategy...', 'info')
