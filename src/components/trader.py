@@ -98,7 +98,7 @@ class Trader:
                 if self.decision == 'EXIT':
                     self.order_mgr.close_all_positions()
 
-                if self.decision != 'STAY':
+                if self.decision != 'STAY' and self.decision != 'EXIT':
                     orders = self.strategy.create_orders(self.decision)
                     logger.info(f"Orders created: {orders}")
                     if orders:
