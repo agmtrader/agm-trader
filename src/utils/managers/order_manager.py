@@ -76,7 +76,6 @@ class OrderManager:
                 
         async def _close():
             for position in self.ib.positions():
-                print(position)
                 action = 'SELL' if position.position > 0 else 'BUY'
                 contract = position.contract
                 order = MarketOrder(action=action, totalQuantity=position.position)
