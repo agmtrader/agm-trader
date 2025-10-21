@@ -62,6 +62,7 @@ class Trader:
 
         self.trades, decisions = self.strategy.backtest()
 
+        # Record a history of strategy decisions and prices
         for d in decisions:
             self.history.append({
                 'current_time': d.get('date'),
@@ -70,9 +71,6 @@ class Trader:
                 'account_summary': self.account_summary,
             })
 
-        trades_df = pd.DataFrame([trade.to_dict() for trade in self.trades])
-        trades_df.to_csv('backtest.csv', index=False)
-
         self.running = True
 
         logger.announcement(f"Running strategy: {self.strategy.name}. Running again in {self.strategy.timeframe_seconds/3600} hours", 'info')    
@@ -80,14 +78,14 @@ class Trader:
         try:
             while True:
 
-                if not self.conn.is_connected():
-                    self.conn.reconnect()
-
                 if not self.running:
                     self.conn.stop_connection_monitor()
                     exit()
 
-                self.strategy.refresh_params(self.data)
+                if not self.conn.is_connected():
+                    self.conn.reconnect()
+                    continue
+                    
                 self.strategy.params = self.strategy.refresh_params(self.data)
                 self.account_summary = self.data.get_account_summary()
                 
@@ -116,7 +114,6 @@ class Trader:
                     
                 # Refresh strategy params
                 self.account_summary = self.data.get_account_summary()
-                self.strategy.refresh_params(self.data)
                 self.strategy.params = self.strategy.refresh_params(self.data)
 
                 # Record a snapshot of the current state every timeframe
