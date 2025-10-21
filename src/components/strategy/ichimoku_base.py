@@ -195,10 +195,10 @@ class IchimokuBase(Strategy):
             # Compute TP levels
             if self.trend_direction == 'long':
                 self.tp1_level = self.last_prev_psar + 0.382 * self.diff
-                self.tp2_level = self.last_prev_psar + 0.5 * self.diff
+                self.tp2_level = self.last_prev_psar + 0.618 * self.diff
             else:
                 self.tp1_level = self.last_prev_psar - 0.382 * self.diff
-                self.tp2_level = self.last_prev_psar - 0.5 * self.diff
+                self.tp2_level = self.last_prev_psar - 0.618 * self.diff
             self.tp1_hit = False
             # Reset extremes
             self.max_high_since_start = highs[-1]
@@ -413,25 +413,39 @@ class IchimokuBase(Strategy):
         price_psar_prev = self.last_prev_psar if self.last_prev_psar is not None else latest_data.get('close')
         price_tp1 = self.tp1_level if self.tp1_level is not None else latest_data.get('close')
 
-        def lmt(side: str, qty: int, price: float):
-            return LimitOrder(action=side, lmtPrice=round(price, 2), totalQuantity=qty)
+        stop_price = self.params.indicators.get('psar') if isinstance(self.params.indicators, dict) else None
+        stop_price = stop_price if stop_price is not None else latest_data.get('close')
+
+        def bracket(side_parent: str, qty_parent: int, entry_price: float):
+            opposite = 'SELL' if side_parent == 'BUY' else 'BUY'
+            # Parent limit for entry
+            parent = LimitOrder(action=side_parent, lmtPrice=round(entry_price,2), totalQuantity=qty_parent, transmit=False)
+            # TP1 child for first 6 contracts
+            tp1_qty = min(6, qty_parent)
+            tp2_qty = qty_parent - tp1_qty
+            take_profit1 = LimitOrder(action=opposite, lmtPrice=round(self.tp1_level,2), totalQuantity=tp1_qty, parentId=parent.orderId, transmit=False)
+            # TP2 for remaining
+            take_profit2 = LimitOrder(action=opposite, lmtPrice=round(self.tp2_level,2), totalQuantity=tp2_qty, parentId=parent.orderId, transmit=False)
+            # Stop loss for full qty
+            stop_order = StopOrder(action=opposite, stopPrice=round(stop_price,2), totalQuantity=qty_parent, parentId=parent.orderId, transmit=True)
+            return [parent, take_profit1, take_profit2, stop_order]
 
         if action == 'LONG':
-            return [lmt('BUY', default_entry_qty, price_psar_prev)]
+            return bracket('BUY', 12, price_psar_prev)
         if action == 'SHORT':
-            return [lmt('SELL', default_entry_qty, price_psar_prev)]
+            return bracket('SELL', 12, price_psar_prev)
 
         if action.startswith('ADD_LONG_'):
             qty_add = int(action.split('_')[-1])
-            return [lmt('BUY', qty_add, latest_data.get('close'))]
+            return bracket('BUY', qty_add, latest_data.get('close'))
         if action.startswith('ADD_SHORT_'):
             qty_add = int(action.split('_')[-1])
-            return [lmt('SELL', qty_add, latest_data.get('close'))]
+            return bracket('SELL', qty_add, latest_data.get('close'))
 
         if action.startswith('PARTIAL_EXIT_'):
             qty_exit = int(action.split('_')[-1])
             side_action = 'SELL' if self._get_position_direction() == 'long' else 'BUY'
-            return [lmt(side_action, qty_exit, price_tp1)]
+            return [LimitOrder(action=side_action, lmtPrice=round(price_tp1, 2), totalQuantity=qty_exit)]
 
         if action == 'EXIT':
             # Close entire position at market
