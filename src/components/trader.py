@@ -102,15 +102,24 @@ class Trader:
                     if orders:
                         for order in orders:
                             self.order_mgr.place_order(self.strategy, order)
-                            trade = TradeSnapshot(
-                                side=self.decision,
-                                qty=order.totalQuantity,
-                                entry_date=datetime.now(),
-                                entry_price=order.lmtPrice,
-                            )
-                            self.trades.append(trade)
-                            #logger.warning("Order placement is currently disabled for safety")
+                            # We no longer create and store a TradeSnapshot for every order entry.
+                            # Snapshots should be registered only when a position is closed (EXIT)
+                            # or when a take-profit / partial exit is executed.
                             logger.announcement(f"Order placed: {order}", 'success')
+
+                        # Record snapshots only for exits / partial exits
+                        if self.decision == 'EXIT' or self.decision.startswith('PARTIAL_EXIT_'):
+                            for order in orders:
+                                # Use order's limit/stop price when available; otherwise fallback to 0
+                                price = getattr(order, 'lmtPrice', None) or getattr(order, 'stopPrice', None) or 0
+                                snap = TradeSnapshot(
+                                    side=self.decision,
+                                    qty=order.totalQuantity,
+                                    entry_date=datetime.now(),
+                                    entry_price=price,
+                                )
+                                self.trades.append(snap)
+                            logger.info(f"Trade snapshots registered for {self.decision}")
                     
                 # Refresh strategy params
                 self.account_summary = self.data.get_account_summary()
