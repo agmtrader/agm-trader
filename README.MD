@@ -1,4 +1,4 @@
 - Clone this repo
 - Fill in the .env file with your IBKR credentials for the Trader
-- Provision a droplet
-- Run the droplet.sh script
+- Run the droplet.sh script to provision a droplet in DigitalOcean
+- Backup encoded private and public keys to Drive
