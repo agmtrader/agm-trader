@@ -3,7 +3,7 @@ services:
 
   ibkr-gateway:
     container_name: ibkr-gateway
-    restart: always
+    restart: unless-stopped
     build:
       platforms:
         - linux/amd64
@@ -54,7 +54,7 @@ services:
 
   trader-socket:
     container_name: trader-socket
-    restart: always
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
