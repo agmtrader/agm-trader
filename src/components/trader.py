@@ -36,7 +36,7 @@ class Trader:
 
         try:
             self.conn.start_connection_monitor()
-            self.trading_thread = threading.Thread(target=self.run, args=('ICHIMOKU_BASE',))
+            self.trading_thread = threading.Thread(target=self.run, args=('SMACROSSOVER',))
             self.trading_thread.start()
             nest_asyncio.apply()
 
