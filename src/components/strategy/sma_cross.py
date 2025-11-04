@@ -11,7 +11,7 @@ class SMACrossoverParams(BaseStrategyParams):
 
     def __init__(self):
         super().__init__()
-        contract = Stock('MCD', 'SMART', 'USD')
+        contract = Stock('MSFT', 'SMART', 'USD')
         self.contracts = [ContractData(contract)]
         self.indicators = {
             'sma': 0
